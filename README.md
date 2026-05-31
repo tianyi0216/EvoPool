@@ -2,7 +2,7 @@
 
 ## Overview
 
-EvoPool grows a pool of programmatic annotators by iteratively prompting an LLM, then aggregates their votes into training labels for a downstream classifier. A 4-agent loop (Generator -> Improver -> Refiner -> selection gate) evolves the pool across iterations, and an embedding-aware aggregator (EvoAgg, A1 LR-CV) converts noisy votes into clean labels that match or beat direct LLM annotation at a fraction of the API cost. Defaults reproduce the paper headline cell: ChemProt + Darwinian (memory_level=0) + EvoAgg + RoBERTa-large.
+EvoPool grows a pool of programmatic annotators by iteratively prompting an LLM, then aggregates their votes into training labels for a downstream model. A 4-agent loop (Generator -> Improver -> Refiner -> selection gate) evolves the pool across iterations, and an embedding-aware aggregator converts noisy votes into clean labels that match or beat direct LLM annotation at a fraction of the cost.
 
 ## Setup
 
@@ -14,7 +14,6 @@ pip install -r requirements.txt
 export OPENAI_API_KEY=sk-...   # required for the Generator / Improver agents
 ```
 
-Python 3.10 also works; 3.11 is the tested default for PyTorch + transformers.
 
 ## Quick start
 
@@ -47,11 +46,11 @@ All runtime behavior is driven by a single YAML file (`config.yaml` by default).
 
 | Key | Purpose |
 |-----|---------|
-| `dataset`, `data_dir`, `n_classes`, `multi_label`, `task_family` | Which task to run; resolves prompt + evaluator automatically |
+| `dataset`, `data_dir`, `n_classes`, `multi_label`, `task_family` | Which task to run, resolves prompt + evaluator automatically |
 | `pipeline.{generator,improver,refiner,selection_gate,query_selection}` | 4-agent loop hyperparameters |
-| `pipeline.memory_level` | `0` = Darwinian (paper default); `>=2` enables Reflector / shared memory |
+| `pipeline.memory_level` | `0` = Stateless agents `>=2` enables Reflector / shared memory |
 | `aggregator` | `evoagg` (paper default) or `mv` (majority-vote baseline) |
-| `evoagg.{embedder,cv_folds}` | A1 LR-CV settings, including R094 out-of-fold correction |
+| `evoagg.{embedder,cv_folds}` | EvoAgg settings |
 | `downstream.model` | `roberta-large` (full fine-tune), `qwen3-1.7b`, or `llama-3.1-8b` (LoRA) |
 
 To switch datasets, copy `config.yaml` to `configs/my_run.yaml`, change `dataset` / `data_dir` / `n_classes` / `multi_label` / `task_family`, and pass it to the launchers. Pre-built configs for ChemProt / FEVER / PubMed across RoBERTa / Qwen / Llama backbones live in `configs/`.
@@ -79,7 +78,7 @@ After raw inputs are in place, `bash process_data.sh` writes processed splits to
 
 Defaults in `config.yaml` already match the headline cell:
 
-- Pipeline = Darwinian (memory_level = 0, Refiner activates at iter >= 3, subsumption pruning on)
+- Pipeline = Stateless Agent (memory_level = 0, Refiner activates at iter >= 3, subsumption pruning on)
 - Generator backbone = `gpt-4o-mini`, temperature = 0.5
 - 12 iterations, seed = 42
 - Aggregator = EvoAgg with 5-fold OOF
