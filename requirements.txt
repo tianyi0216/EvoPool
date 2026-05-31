@@ -1,0 +1,29 @@
+# EvoPool runtime dependencies.
+# Install with: pip install -r requirements.txt
+# Note: for GPU downstream training, install a CUDA-matched torch wheel from https://pytorch.org first.
+
+# LLM client
+openai>=1.0
+
+# Core scientific stack
+numpy
+scipy
+scikit-learn
+pandas
+pyyaml
+tqdm
+
+# Embeddings / aggregator
+sentence-transformers
+
+# Downstream training
+torch
+transformers>=4.40
+peft
+accelerate
+huggingface_hub
+datasets
+
+# NLP utilities (used by data prep + enrichment)
+spacy
+nltk

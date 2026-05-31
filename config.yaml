@@ -1,0 +1,129 @@
+# EvoPool — default configuration
+# Reproduces the paper headline cell: ChemProt + L0/D_v6 (Darwinian) + EvoAgg + RoBERTa-large.
+#
+# Override any field by editing this file or by passing a different YAML path to the launchers:
+#   bash run_evopool.sh configs/fever_roberta.yaml
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+dataset:
+  name: chemprot                       # chemprot | fever | pubmed
+  raw_dir: data/raw/chemprot           # user-downloaded raw inputs (see README.md "Datasets")
+  processed_dir: data/processed/chemprot
+  n_classes: 10                        # ChemProt has 10 relation classes (auto-resolved if omitted)
+  multi_label: false                   # set true for pubmed (14-class multi-label)
+  task_family: classification          # classification (lexical prompt) | verification (claim/evidence prompt)
+  val_budget: 500                      # cap validation split to this size (paper convention)
+  seed: 42
+
+  # FEVER-only knobs (ignored for other datasets)
+  fever_enriched: false                # true -> run data/enrich_fever.py with features A,B,C,D,E
+  fever_enrichment_features: "A,B,C,D,E"
+
+  # PubMed-only knob (ignored for other datasets)
+  pubmed_kaggle_zip: null              # absolute path to Kaggle PubMed 14-class zip (required when dataset.name == pubmed)
+
+# ---------------------------------------------------------------------------
+# Pipeline — 4-agent annotator-evolution loop (Generator -> Improver -> Refiner -> selection gate)
+# ---------------------------------------------------------------------------
+pipeline:
+  out_root: runs/chemprot_l0           # iter_XX/ pool + eval lives here
+  model: gpt-4o-mini                   # any OpenAI chat model; reasoning models (o3/gpt-5) auto-detected
+  temperature: 0.5
+  n_iters: 12                          # production = 12; stationarity confirmed beyond this
+  seed: 42
+  memory_level: 0                      # 0 = L0 Darwinian (paper headline); >=2 enables Reflector / shared memory
+  cache_root: runs/cache
+
+  generator:
+    n_calls: 18                        # number of LLM calls per generator pass
+    min_precision: 0.30                # drop annotators below this val precision before pool admission
+    min_fires: 5                       # require at least N val firings
+
+  improver:
+    n_calls: 6                         # C1_v2 per-class budget split (3 per-class + 3 broad batches)
+    min_precision: 0.25
+    min_fires: 5
+    max_jaccard_overlap: 0.95          # near-duplicate guard against existing pool
+    max_train_val_prec_gap: 0.30       # drop annotators with unstable train-vs-val precision
+    per_class_budget: true             # C1_v2: targeted per-class budget allocation (paper default)
+    f1_threshold: 0.40                 # classes with val F1 < this are targeted
+    max_targets: 3                     # cap how many classes Improver attacks each iter
+    n_pos_examples: 8                  # positive demos shown to LLM per target class
+
+  refiner:
+    filter_min_precision: 0.25
+    max_jaccard_overlap: 0.95
+    min_iter: 3                        # ref_min_iter gating (paper default: skip first 3 iters)
+
+  ablation:
+    enable_post_iter: true             # greedy strict-improvement drop of newly admitted annotators
+    drop_threshold: 0.001              # minimum val macro-F1 gain required to keep a drop
+    min_iter_gain: 0.001
+
+  pruning:
+    c3_pool_pruning: true              # C3: post-iter prune-then-diversify (paper default ON)
+    class_dropout_after: 99            # number of consecutive failing iters before a class is dropped (effectively off)
+    do_no_harm_tolerance: 0.020
+
+  query_selection:
+    method: submodular                 # submodular | batchbald | random | uncertainty
+    batch_size: 60                     # k_max per iter
+
+# ---------------------------------------------------------------------------
+# Aggregator — convert per-annotator votes into a single training label
+# ---------------------------------------------------------------------------
+aggregator:
+  method: evoagg                       # evoagg (paper headline; A1 LR-CV) | mv (majority vote baseline)
+  emb_model: sentence-transformers/all-MiniLM-L6-v2
+  emb_cache: data/embeddings/chemprot_minilm_l6_v2.npz
+  oof_folds: 5                         # R094 OOF correction; reduce for very small splits
+  dump_dir: runs/chemprot_l0/evoagg_labels
+
+# ---------------------------------------------------------------------------
+# Downstream — train a classifier on the aggregated labels
+# ---------------------------------------------------------------------------
+downstream:
+  model: roberta                       # roberta | qwen | llama
+  model_name: FacebookAI/roberta-large # HuggingFace model id (override for Qwen/Llama checkpoints)
+  hard_label_path: runs/chemprot_l0/evoagg_labels   # consumed from aggregator.dump_dir
+  out_dir: runs/chemprot_l0/downstream
+  seed: 42
+  fp16: true
+
+  # Weak-supervision phase (train on aggregated labels)
+  ws:
+    epochs: 10
+    lr: 2.0e-5
+    batch_size: 32
+    max_length: 128
+    weight_decay: 0.01
+    warmup_ratio: 0.10
+
+  # Continued fine-tuning on the clean validation set
+  cft:
+    enabled: true
+    clean_sizes: [25, 50, 100, 200, 500, 1000]
+    epochs: 5
+    lr: 1.0e-5
+
+  # LoRA settings (used only when downstream.model == qwen | llama)
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [q_proj, k_proj, v_proj, o_proj]
+    bf16: true
+    grad_accum: 2
+    batch_size: 8                      # 4 recommended for Llama-3.1-8B on a single L40
+
+# ---------------------------------------------------------------------------
+# Output paths
+# ---------------------------------------------------------------------------
+output:
+  base_dir: runs/chemprot_l0
+  pipeline_dir: ${output.base_dir}/pipeline
+  aggregator_dir: ${output.base_dir}/evoagg
+  downstream_dir: ${output.base_dir}/downstream
+  log_level: INFO
