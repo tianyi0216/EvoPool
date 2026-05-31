@@ -1,5 +1,5 @@
 # EvoPool — default configuration
-# Reproduces the paper headline cell: ChemProt + L0/D_v6 (Darwinian) + EvoAgg + RoBERTa-large.
+# Reproduces the paper headline cell: ChemProt + Darwinian variant + EvoAgg + RoBERTa-large.
 #
 # Override any field by editing this file or by passing a different YAML path to the launchers:
 #   bash run_evopool.sh configs/fever_roberta.yaml
@@ -33,7 +33,7 @@ pipeline:
   temperature: 0.5
   n_iters: 12                          # production = 12; stationarity confirmed beyond this
   seed: 42
-  memory_level: 0                      # 0 = L0 Darwinian (paper headline); >=2 enables Reflector / shared memory
+  memory_level: 0                      # 0 = Darwinian (paper headline); >=2 enables Reflector / shared memory
   cache_root: runs/cache
 
   generator:
@@ -42,12 +42,12 @@ pipeline:
     min_fires: 5                       # require at least N val firings
 
   improver:
-    n_calls: 6                         # C1_v2 per-class budget split (3 per-class + 3 broad batches)
+    n_calls: 6                         # per-class budget split (3 per-class + 3 broad batches)
     min_precision: 0.25
     min_fires: 5
     max_jaccard_overlap: 0.95          # near-duplicate guard against existing pool
     max_train_val_prec_gap: 0.30       # drop annotators with unstable train-vs-val precision
-    per_class_budget: true             # C1_v2: targeted per-class budget allocation (paper default)
+    per_class_budget: true             # targeted per-class budget allocation (paper default)
     f1_threshold: 0.40                 # classes with val F1 < this are targeted
     max_targets: 3                     # cap how many classes Improver attacks each iter
     n_pos_examples: 8                  # positive demos shown to LLM per target class
@@ -63,12 +63,12 @@ pipeline:
     min_iter_gain: 0.001
 
   pruning:
-    c3_pool_pruning: true              # C3: post-iter prune-then-diversify (paper default ON)
+    subsumption_pruning: true          # post-iter prune-then-diversify (paper default ON)
     class_dropout_after: 99            # number of consecutive failing iters before a class is dropped (effectively off)
     do_no_harm_tolerance: 0.020
 
   query_selection:
-    method: submodular                 # submodular | batchbald | random | uncertainty
+    method: batchbald                  # batchbald | random | uncertainty
     batch_size: 60                     # k_max per iter
 
 # ---------------------------------------------------------------------------

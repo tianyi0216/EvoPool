@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EvoPool: single-label submodular error clustering -> improvement_brief.json.
+"""EvoPool: single-label error analysis -> improvement_brief.json.
 
 Analyzes annotator pool performance and produces a structured improvement brief
 that the Improver agent consumes. The "brain" of the iterative improvement loop:
@@ -147,18 +147,18 @@ class TfidfIndex:
         return max(0.0, min(1.0, dot))
 
 # -----------------------------------------------------------------------
-# LF-coverage-aware similarity
+# annotator-coverage-aware similarity
 # -----------------------------------------------------------------------
 
 class LFCoverageIndex:
-    """Cosine similarity based on LF firing patterns (coverage vectors).
+    """Cosine similarity based on annotator firing patterns (coverage vectors).
 
-    Each example is represented by a binary vector of which LFs fire on it.
-    Examples covered by the same LFs are more similar.  This signal is weak
-    when the pool is small (few LFs) and strong when the pool is large.
+    Each example is represented by a binary vector of which annotators fire on it.
+    Examples covered by the same annotators are more similar.  This signal is weak
+    when the pool is small (few annotators) and strong when the pool is large.
 
     The ``adaptive_alpha`` method returns a blending weight that decreases
-    the text-similarity contribution as LF coverage grows, so the
+    the text-similarity contribution as annotator coverage grows, so the
     submodular objective automatically shifts from text-based diversity
     (early iterations) to coverage-aware diversity (later iterations).
     """
@@ -188,7 +188,7 @@ class LFCoverageIndex:
         """Return text-similarity weight alpha in [0.3, 1.0].
 
         alpha = 1.0  when coverage < 30%  (pool too immature, trust text sim)
-        alpha = 0.3  when coverage > 60%  (mature pool, trust LF coverage)
+        alpha = 0.3  when coverage > 60%  (mature pool, trust annotator coverage)
         Linear interpolation in between.
         """
         cov = self._coverage
@@ -222,7 +222,7 @@ def write_json(path: Path, obj: Any) -> None:
 
 
 # -----------------------------------------------------------------------
-# Load pool & run LFs
+# Load pool & run annotators
 # -----------------------------------------------------------------------
 
 def load_pool_module(module_path: Path) -> Any:
@@ -270,7 +270,7 @@ def _example_vote_vector(vote_matrix: List[List[int]], ex_idx: int) -> List[int]
 
 
 def _active_set(votes_for_lf: List[int]) -> Set[int]:
-    """Indices where the LF does NOT abstain."""
+    """Indices where the annotator does NOT abstain."""
     return {i for i, v in enumerate(votes_for_lf) if v != ABSTAIN}
 
 
@@ -296,7 +296,7 @@ def _token_set(text: str) -> Set[str]:
 
 def _meta_signature(ex: Dict[str, Any]) -> Tuple[Any, ...]:
     """
-    Discrete, interpretable features that LFs can realistically use.
+    Discrete, interpretable features that annotators can realistically use.
     Kept small to avoid overfitting and preserve interpretability.
     """
     meta = ex.get("metadata") or {}
@@ -350,7 +350,7 @@ def _sim_examples(
         s_text = tfidf_index.cosine(i, j)
     else:
         s_text = _sim_text_jaccard(tokens_by_idx[i], tokens_by_idx[j])
-    # Blend text similarity with LF coverage similarity
+    # Blend text similarity with annotator coverage similarity
     if lf_coverage_index is not None and lf_alpha is not None:
         s_lf = lf_coverage_index.cosine(i, j)
         s_text = lf_alpha * s_text + (1.0 - lf_alpha) * s_lf
@@ -359,335 +359,8 @@ def _sim_examples(
     return s
 
 
-def _build_sim_matrix_numpy(
-    universe: List[int],
-    candidates: List[int],
-    examples: Sequence[Dict[str, Any]],
-    sim_beta: float,
-    text_sim_method: str,
-    embedding_index: Optional[EmbeddingIndex],
-    lf_coverage_index: Optional[LFCoverageIndex],
-    effective_lf_alpha: Optional[float],
-) -> "numpy.ndarray":
-    """Precompute sim[i_idx, c_idx] matrix using vectorized numpy ops.
-
-    Returns shape (len(universe), len(candidates)) float32 array.
-    """
-    import numpy as np
-    from sklearn.feature_extraction.text import TfidfVectorizer
-
-    all_indices = sorted(set(universe) | set(candidates))
-    idx2pos = {idx: pos for pos, idx in enumerate(all_indices)}
-
-    # --- Text similarity component (sparse TF-IDF or Jaccard) ---
-    if text_sim_method in ("tfidf", "hybrid"):
-        # Use sklearn TfidfVectorizer for fast sparse TF-IDF + cosine
-        texts = [_get_text_for_similarity(examples[idx]) for idx in all_indices]
-        vectorizer = TfidfVectorizer(
-            max_features=10000, sublinear_tf=True, min_df=2,
-            token_pattern=r"(?u)\b\w\w+\b",
-        )
-        tfidf_matrix = vectorizer.fit_transform(texts)
-        # Compute text sim submatrix: universe × candidates
-        u_pos = [idx2pos[i] for i in universe]
-        c_pos = [idx2pos[j] for j in candidates]
-        text_sim = (tfidf_matrix[u_pos] @ tfidf_matrix[c_pos].T).toarray()
-        np.clip(text_sim, 0.0, 1.0, out=text_sim)
-    elif text_sim_method == "jaccard":
-        # Fallback: vectorized Jaccard (slower but still faster than Python loop)
-        token_sets = {idx: _token_set(_get_text_for_similarity(examples[idx])) for idx in all_indices}
-        u_pos = list(range(len(universe)))
-        c_pos = list(range(len(candidates)))
-        text_sim = np.zeros((len(universe), len(candidates)), dtype=np.float32)
-        for ui, uidx in enumerate(universe):
-            ta = token_sets[uidx]
-            if not ta:
-                continue
-            for ci, cidx in enumerate(candidates):
-                tb = token_sets[cidx]
-                if not tb:
-                    continue
-                inter = len(ta & tb)
-                union = len(ta | tb)
-                text_sim[ui, ci] = inter / union if union > 0 else 0.0
-    else:
-        text_sim = np.zeros((len(universe), len(candidates)), dtype=np.float32)
-
-    # --- LF coverage similarity component ---
-    if lf_coverage_index is not None and effective_lf_alpha is not None and effective_lf_alpha < 1.0:
-        u_pos_lf = [universe[i] for i in range(len(universe))]
-        c_pos_lf = [candidates[j] for j in range(len(candidates))]
-        lf_normed = lf_coverage_index._normed
-        lf_sim = lf_normed[u_pos_lf] @ lf_normed[c_pos_lf].T
-        np.clip(lf_sim, 0.0, 1.0, out=lf_sim)
-        text_sim = effective_lf_alpha * text_sim + (1.0 - effective_lf_alpha) * lf_sim
-
-    # --- Metadata similarity component (vectorized, per-feature) ---
-    if sim_beta > 0.0:
-        meta_sigs = {idx: _meta_signature(examples[idx]) for idx in all_indices}
-        sig_len = len(next(iter(meta_sigs.values()))) if meta_sigs else 1
-        if sig_len > 0:
-            # Encode mixed-type signatures to int (bools, strings, ints → int codes)
-            # Build a per-feature value→code mapping
-            all_sigs = [meta_sigs[idx] for idx in all_indices]
-            feat_maps: List[Dict] = [{} for _ in range(sig_len)]
-            for sig in all_sigs:
-                for f, v in enumerate(sig):
-                    if v not in feat_maps[f]:
-                        feat_maps[f][v] = len(feat_maps[f])
-            def _encode(sig):
-                return [feat_maps[f][v] for f, v in enumerate(sig)]
-            u_meta = np.array([_encode(meta_sigs[i]) for i in universe], dtype=np.int32)
-            c_meta = np.array([_encode(meta_sigs[j]) for j in candidates], dtype=np.int32)
-            # Accumulate per-feature matches to avoid (n_u, n_c, sig_len) broadcast
-            meta_sim = np.zeros((len(universe), len(candidates)), dtype=np.float32)
-            for f in range(sig_len):
-                meta_sim += np.equal.outer(u_meta[:, f], c_meta[:, f]).astype(np.float32)
-            meta_sim /= sig_len
-            sim_matrix = sim_beta * meta_sim + (1.0 - sim_beta) * text_sim
-        else:
-            sim_matrix = text_sim
-    else:
-        sim_matrix = text_sim
-
-    # Diagonal (self-similarity) = 1.0 where universe and candidate overlap
-    u_set = {idx: ui for ui, idx in enumerate(universe)}
-    for ci, cidx in enumerate(candidates):
-        if cidx in u_set:
-            sim_matrix[u_set[cidx], ci] = 1.0
-
-    return sim_matrix.astype(np.float32)
-
-
-def facility_location_greedy(
-    indices: Sequence[int],
-    examples: Sequence[Dict[str, Any]],
-    *,
-    candidate_indices: Optional[Sequence[int]] = None,
-    k_max: int,
-    sim_beta: float = 0.5,
-    k_min: int = 1,
-    rho_target: Optional[float] = None,
-    weights: Optional[Dict[int, float]] = None,
-    seed: int = 42,
-    text_sim_method: str = "jaccard",
-    embedding_index: Optional[EmbeddingIndex] = None,
-    lf_coverage_index: Optional[LFCoverageIndex] = None,
-    lf_alpha: Optional[float] = None,
-    class_balance_floor: int = 0,
-    n_classes: int = 0,
-    pseudo_label_for_balance: Optional[Sequence[int]] = None,
-) -> Dict[str, Any]:
-    """
-    Greedy maximization of weighted facility location:
-      f(S) = sum_{i in U} w_i * max_{j in S} sim(i, j)
-
-    Uses precomputed numpy similarity matrix + lazy greedy evaluation
-    (Minoux 1978) for orders-of-magnitude speedup over naive Python loops.
-    """
-    import numpy as np
-
-    universe = list(indices)
-    if candidate_indices is None:
-        candidates = universe[:]
-    else:
-        candidates = list(candidate_indices)
-
-    if not universe or k_max <= 0 or not candidates:
-        return {
-            "strategy": "facility_location_greedy",
-            "k_max": int(k_max),
-            "k_min": int(k_min),
-            "rho_target": rho_target,
-            "sim_beta": float(sim_beta),
-            "selected_indices": [],
-            "selected_ids": [],
-            "achieved_rho": 0.0,
-            "marginal_gains": [],
-            "rho_curve": [],
-            "W_total": 0.0,
-        }
-
-    sim_beta = float(max(0.0, min(1.0, sim_beta)))
-    k_min = int(max(1, k_min))
-    k_max = int(min(k_max, len(candidates)))
-    if rho_target is not None and rho_target <= 0:
-        rho_target = None
-
-    rng = random.Random(seed)
-    rng.shuffle(candidates)
-
-    w = weights or {}
-    weights_list = np.array([float(w.get(i, 1.0)) for i in universe], dtype=np.float32)
-    W_total = float(weights_list.sum())
-    if W_total <= 0:
-        weights_list = np.ones(len(universe), dtype=np.float32)
-        W_total = float(len(universe))
-
-    # For hybrid mode, compute adaptive alpha
-    effective_lf_alpha = lf_alpha
-    if text_sim_method == "hybrid" and lf_coverage_index is not None:
-        if effective_lf_alpha is None:
-            effective_lf_alpha = lf_coverage_index.adaptive_alpha()
-        print(f"  [hybrid] LF coverage={lf_coverage_index._coverage:.1%}, "
-              f"alpha={effective_lf_alpha:.3f} "
-              f"({effective_lf_alpha:.0%} text + {1-effective_lf_alpha:.0%} LF coverage)")
-
-    # --- Precompute similarity matrix (vectorized) ---
-    import time as _time
-    t0 = _time.time()
-    print(f"  Precomputing similarity matrix ({len(universe)}×{len(candidates)}) ...")
-    sim_matrix = _build_sim_matrix_numpy(
-        universe, candidates, examples,
-        sim_beta=sim_beta,
-        text_sim_method=text_sim_method,
-        embedding_index=embedding_index,
-        lf_coverage_index=lf_coverage_index,
-        effective_lf_alpha=effective_lf_alpha,
-    )
-    print(f"  Similarity matrix built in {_time.time()-t0:.1f}s")
-
-    # --- Lazy greedy selection (Minoux 1978) ---
-    # cand_idx_map: position in candidates list -> column in sim_matrix
-    n_u = len(universe)
-    n_c = len(candidates)
-
-    best_sim_vec = np.zeros(n_u, dtype=np.float32)  # max sim to selected set
-    selected: List[int] = []
-    selected_ci: Set[int] = set()  # indices into candidates list
-    marginal_gains: List[float] = []
-    rho_curve: List[float] = []
-    f_value = 0.0
-
-    # Upper bounds on marginal gain for lazy evaluation
-    upper_bounds = np.full(n_c, np.inf, dtype=np.float32)
-    # Track which candidates are still available
-    available = np.ones(n_c, dtype=bool)
-
-    # ── Class-balance floor (optional) ──────────────────────────────────
-    # Reserve `class_balance_floor` slots per class up-front. For each class
-    # we pick the candidate with highest IMPORTANCE WEIGHT among that class's
-    # examples. Then standard greedy proceeds for the remaining slots, so the
-    # facility-location objective is still maximised over what's left.
-    if class_balance_floor and class_balance_floor > 0 and n_classes > 0:
-        if (pseudo_label_for_balance is not None
-                and len(pseudo_label_for_balance) == len(examples)):
-            pseudo_full = list(pseudo_label_for_balance)
-        else:
-            pseudo_full = [None] * len(examples)
-
-        # Build {class -> ordered candidate-indices (by weight desc)}.
-        # cand index ci → universe row when candidate is also in universe;
-        # importance weight for class ranking comes from `weights_list[ui]`
-        # using ui = universe.index(candidates[ci]) (linear scan; small k).
-        u_pos = {u: i for i, u in enumerate(universe)}
-
-        per_class_picked = {c: 0 for c in range(int(n_classes))}
-        cand_by_class: Dict[int, List[Tuple[float, int]]] = {c: [] for c in range(int(n_classes))}
-        for ci, ex_idx in enumerate(candidates):
-            cls = pseudo_full[ex_idx] if ex_idx < len(pseudo_full) else None
-            if cls is None or cls < 0 or cls >= int(n_classes):
-                continue
-            wgt = float(weights_list[u_pos[ex_idx]]) if ex_idx in u_pos else 0.0
-            cand_by_class[int(cls)].append((wgt, ci))
-        for cls, lst in cand_by_class.items():
-            lst.sort(reverse=True)
-
-        # Round-robin pick floor per class — interleaving classes preserves
-        # facility-location coverage better than picking all of class 0 first.
-        for round_idx in range(int(class_balance_floor)):
-            for cls in range(int(n_classes)):
-                if per_class_picked[cls] >= int(class_balance_floor):
-                    continue
-                picked = None
-                while cand_by_class[cls]:
-                    _w, ci = cand_by_class[cls].pop(0)
-                    if available[ci]:
-                        picked = ci
-                        break
-                if picked is None:
-                    continue
-                ci = picked
-                # Add this candidate to the selected set + update FL state.
-                selected.append(candidates[ci])
-                selected_ci.add(ci)
-                available[ci] = False
-                sim_col = sim_matrix[:, ci]
-                improved = sim_col > best_sim_vec
-                gain_now = float(np.dot(weights_list[improved], sim_col[improved] - best_sim_vec[improved]))
-                marginal_gains.append(gain_now)
-                f_value += gain_now
-                np.maximum(best_sim_vec, sim_col, out=best_sim_vec)
-                rho_curve.append(float(f_value / W_total) if W_total > 0 else 0.0)
-                per_class_picked[cls] += 1
-                if len(selected) >= k_max:
-                    break
-            if len(selected) >= k_max:
-                break
-
-    for step in tqdm(range(len(selected), k_max), desc="  Greedy select", leave=False):
-        best_candidate_ci: Optional[int] = None
-        best_gain = -1.0
-
-        # Lazy greedy: maintain a priority queue via sorted upper bounds
-        # Re-evaluate candidates in order of their upper bound; stop when
-        # the top candidate's actual gain matches its position
-        order = np.argsort(-upper_bounds)  # descending
-        for ci in order:
-            if not available[ci]:
-                continue
-            if upper_bounds[ci] <= best_gain:
-                # All remaining have lower upper bounds — we're done
-                break
-            # Compute actual marginal gain
-            sim_col = sim_matrix[:, ci]
-            delta = sim_col - best_sim_vec
-            np.maximum(delta, 0.0, out=delta)
-            gain = float(np.dot(weights_list, delta))
-            upper_bounds[ci] = gain  # tighten bound
-            if gain > best_gain:
-                best_gain = gain
-                best_candidate_ci = int(ci)
-
-        if best_candidate_ci is None or best_gain <= 0:
-            break
-
-        selected.append(candidates[best_candidate_ci])
-        selected_ci.add(best_candidate_ci)
-        available[best_candidate_ci] = False
-        marginal_gains.append(float(best_gain))
-
-        # Update best_sim_vec
-        sim_col = sim_matrix[:, best_candidate_ci]
-        improved = sim_col > best_sim_vec
-        f_value += float(np.dot(weights_list[improved], sim_col[improved] - best_sim_vec[improved]))
-        np.maximum(best_sim_vec, sim_col, out=best_sim_vec)
-
-        achieved_rho = (f_value / W_total) if W_total > 0 else 0.0
-        rho_curve.append(float(achieved_rho))
-        if rho_target is not None and len(selected) >= k_min and achieved_rho >= rho_target:
-            break
-
-    achieved_rho = (f_value / W_total) if W_total > 0 else 0.0
-    return {
-        "strategy": "facility_location_greedy",
-        "text_sim_method": text_sim_method,
-        "k_max": int(k_max),
-        "k_min": int(k_min),
-        "rho_target": rho_target,
-        "sim_beta": float(sim_beta),
-        "selected_indices": selected,
-        "selected_ids": [examples[i].get("id") for i in selected],
-        "achieved_rho": round(achieved_rho, 4),
-        "marginal_gains": [round(g, 6) for g in marginal_gains],
-        "rho_curve": [round(r, 6) for r in rho_curve],
-        "W_total": round(W_total, 6),
-        "class_balance_floor": int(class_balance_floor) if class_balance_floor else 0,
-    }
-
-
 # -----------------------------------------------------------------------
-# Selection metrics (paper-aligned): vote stats, weights, submodular selection
+# Selection metrics: vote stats, importance weights, query acquisition
 # -----------------------------------------------------------------------
 
 def _majority_vote(votes: Sequence[int]) -> int:
@@ -716,7 +389,7 @@ def _entropy_normalized(probs: Dict[int, float]) -> float:
 
 def compute_vote_stats(vote_matrix: List[List[int]]) -> Dict[str, List[Any]]:
     """
-    Computes per-example vote stats based only on LF outputs.
+    Computes per-example vote stats based only on annotator outputs.
     Returns lists of length n_examples.
     """
     n_lfs = len(vote_matrix)
@@ -1020,9 +693,9 @@ def build_facility_clusters(
         keywords = _extract_distinctive_keywords(target_texts, background_texts, top_k=15, min_count=3)
 
         # target_label: mode of non-ABSTAIN agg_labels among members; fallback
-        # to the center's own agg_label if all members abstain. Both render
-        # (c_improver.render_clusters) and the C1_v2 per-class cluster filter
-        # read this field; without it the Improver loses all selector signal.
+        # to the center's own agg_label if all members abstain. Both Improver's
+        # render_clusters and the per-class cluster filter read this field;
+        # without it the Improver loses all selector signal.
         _label_counts: Dict[int, int] = {}
         for i in idxs:
             lab = int(agg_label[i])
@@ -1057,15 +730,13 @@ def build_facility_clusters(
 
 
 # -----------------------------------------------------------------------
-# BADGE and BatchBALD: principled acquisition alternatives to submodular
+# BatchBALD: greedy batch mutual-information acquisition
 # -----------------------------------------------------------------------
 #
-# Both methods share a "per-annotator predictive distribution" view:
-#     P(y | x, theta_j), where each annotator a_j is a posterior sample theta_j.
-#
-# Given the confirmed TFIDF-prototype hybrid aggregator, we also have the
-# aggregated p_bar(y | x).  For selection, we reuse these signals rather than
-# retraining a student model between iterations.
+# Treats each annotator a_j as a posterior sample theta_j and selects examples
+# that are jointly informative — high disagreement among annotators AND
+# non-redundant across the batch.  Reuses annotator votes directly rather than
+# training a separate student model between iterations.
 
 
 def _compute_annotator_pred_probs(
@@ -1103,158 +774,6 @@ def _compute_annotator_pred_probs(
                 probs[i, j].fill(off)
                 probs[i, j, int(v)] = 1.0 - smooth
     return probs
-
-
-def _soft_majority_probs(
-    vote_matrix: List[List[int]],
-    n_examples: int,
-    n_classes: int,
-    *,
-    laplace: float = 1.0,
-    fallback_prior: Optional["numpy.ndarray"] = None,
-) -> "numpy.ndarray":
-    """Aggregate soft predictive P(y | x) via Laplace-smoothed vote counts.
-
-    Returns array of shape (N, C).  Used by BADGE as the "model prediction".
-    """
-    import numpy as np
-    n_lfs = len(vote_matrix)
-    if fallback_prior is None:
-        fallback_prior = np.full(n_classes, 1.0 / n_classes, dtype=np.float32)
-    counts = np.zeros((n_examples, n_classes), dtype=np.float32)
-    for j in range(n_lfs):
-        row = vote_matrix[j]
-        for i in range(n_examples):
-            v = row[i]
-            if 0 <= v < n_classes:
-                counts[i, int(v)] += 1.0
-    totals = counts.sum(axis=1)
-    out = np.empty_like(counts)
-    uncovered = totals == 0
-    out[~uncovered] = (counts[~uncovered] + laplace) / (
-        totals[~uncovered, None] + laplace * n_classes
-    )
-    out[uncovered] = np.asarray(fallback_prior, dtype=np.float32)
-    return out
-
-
-def badge_select(
-    examples: Sequence[Dict[str, Any]],
-    vote_matrix: List[List[int]],
-    *,
-    k: int,
-    n_classes: int,
-    tfidf_dim: int = 128,
-    laplace: float = 1.0,
-    fallback_prior: Optional["numpy.ndarray"] = None,
-    seed: int = 42,
-) -> Dict[str, Any]:
-    """BADGE (Ash et al., ICLR 2020): k-means++ over gradient embeddings.
-
-    Gradient embedding g(x) = (p(y|x) - 1_{y_hat}) ⊗ phi(x), where p(y|x) is
-    the soft-majority prediction (Laplace-smoothed) and phi(x) is a TF-IDF
-    projection to ``tfidf_dim`` (via TruncatedSVD).
-
-    k-means++ selects k points with probability proportional to squared
-    distance from the current set, which approximates A-optimal experimental
-    design over the gradient space.
-    """
-    import numpy as np
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.decomposition import TruncatedSVD
-
-    n = len(examples)
-    if k <= 0 or n == 0:
-        return {
-            "strategy": "badge",
-            "selected_indices": [],
-            "marginal_gains": [],
-            "rho_curve": [],
-            "k": 0,
-        }
-    k = int(min(k, n))
-
-    # 1. TF-IDF features, reduced via truncated SVD to a compact embedding.
-    texts = [_get_text_for_similarity(ex) for ex in examples]
-    vectorizer = TfidfVectorizer(
-        max_features=10000, sublinear_tf=True, min_df=2,
-        token_pattern=r"(?u)\b\w\w+\b",
-    )
-    tfidf = vectorizer.fit_transform(texts)
-    d_target = int(min(tfidf_dim, tfidf.shape[1] - 1, max(1, n - 1)))
-    if d_target < 1:
-        d_target = 1
-    svd = TruncatedSVD(n_components=d_target, random_state=seed)
-    phi = svd.fit_transform(tfidf).astype(np.float32)  # (N, D)
-
-    # 2. Soft-majority predictive distribution p(y|x).
-    p = _soft_majority_probs(
-        vote_matrix, n, n_classes,
-        laplace=laplace, fallback_prior=fallback_prior,
-    )  # (N, C)
-    y_hat = p.argmax(axis=1)  # (N,)
-
-    # 3. Gradient embedding:  g(x)[c, :] = (p_c - 1_{c=y_hat}) * phi(x)
-    #    Flatten over classes for distance computation.  Shape (N, C*D).
-    C = n_classes
-    D = phi.shape[1]
-    resid = p.copy()
-    resid[np.arange(n), y_hat] -= 1.0  # (N, C)
-    # Outer product done implicitly by tiling: g[i] = concat_c [resid[i, c] * phi[i]]
-    g = (resid[:, :, None] * phi[:, None, :]).reshape(n, C * D).astype(np.float32)
-
-    # 4. k-means++ seeding over g.
-    rng = np.random.default_rng(seed)
-    # First point: sampled with probability proportional to ||g_i||^2 so that
-    # high-uncertainty examples (large gradient norm) are preferred.
-    sq_norms = (g * g).sum(axis=1)
-    if sq_norms.sum() <= 0:
-        first = int(rng.integers(0, n))
-    else:
-        probs0 = sq_norms / sq_norms.sum()
-        first = int(rng.choice(n, p=probs0))
-    selected: List[int] = [first]
-    selected_mask = np.zeros(n, dtype=bool)
-    selected_mask[first] = True
-
-    # Maintain min squared distance to the selected set.
-    diff = g - g[first]
-    min_d2 = (diff * diff).sum(axis=1)
-    min_d2[first] = 0.0
-    gains: List[float] = [float(sq_norms[first])]
-
-    for _ in range(1, k):
-        total = float(min_d2.sum())
-        if total <= 0:
-            # Degenerate: pick any remaining index uniformly.
-            remaining = np.where(~selected_mask)[0]
-            if remaining.size == 0:
-                break
-            nxt = int(rng.choice(remaining))
-        else:
-            probs = min_d2 / total
-            probs[selected_mask] = 0.0
-            probs = probs / probs.sum() if probs.sum() > 0 else probs
-            nxt = int(rng.choice(n, p=probs))
-        selected.append(nxt)
-        selected_mask[nxt] = True
-        gains.append(float(min_d2[nxt]))
-        # Update min distance.
-        diff = g - g[nxt]
-        new_d2 = (diff * diff).sum(axis=1)
-        min_d2 = np.minimum(min_d2, new_d2)
-        min_d2[nxt] = 0.0
-
-    return {
-        "strategy": "badge",
-        "k": int(len(selected)),
-        "selected_indices": selected,
-        "marginal_gains": [round(g_, 6) for g_ in gains],
-        "per_example_scores": [round(float(x), 6) for x in sq_norms.tolist()],
-        "rho_curve": [],
-        "tfidf_dim": int(D),
-        "n_classes": int(C),
-    }
 
 
 def batchbald_select(
@@ -1487,13 +1006,12 @@ def compute_query_selection_paper_method(
     query_sim_beta: float,
     text_sim_method: str = "jaccard",
     embeddings_path: Optional[str] = None,
-    query_selection_method: str = "submodular",
+    query_selection_method: str = "batchbald",
     max_top_weight_examples: int = 30,
     carryover_age_by_id: Optional[Dict[str, int]] = None,
     carryover_lambda: float = 0.1,
     carryover_age_cap: int = 4,
     class_balance_floor: int = 0,
-    a1_val_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Implements the paper-aligned selection:
@@ -1587,11 +1105,11 @@ def compute_query_selection_paper_method(
     if text_sim_method == "semantic" and embeddings_path:
         emb_index = EmbeddingIndex(embeddings_path, examples)
 
-    # Build LF coverage index for hybrid similarity
+    # Build annotator coverage index for hybrid similarity
     lf_cov_index: Optional[LFCoverageIndex] = None
     if text_sim_method == "hybrid":
         lf_cov_index = LFCoverageIndex(vote_matrix, n)
-        print(f"  LF coverage index: {lf_cov_index._n_lfs} LFs, "
+        print(f"  annotator coverage index: {lf_cov_index._n_lfs} annotators, "
               f"coverage={lf_cov_index._coverage:.1%}, "
               f"adaptive_alpha={lf_cov_index.adaptive_alpha():.3f}")
 
@@ -1632,23 +1150,6 @@ def compute_query_selection_paper_method(
             "marginal_gains": acq_scores,
             "rho_curve": [],
         }
-    elif query_selection_method == "badge":
-        import numpy as _np
-        n_cls_eff = len(LABEL_NAMES) or n_cls
-        fallback_prior = _np.array(
-            [float(pi_hat_by_label.get(c, 1.0 / n_cls_eff)) for c in range(n_cls_eff)],
-            dtype=_np.float32,
-        )
-        selection = badge_select(
-            examples,
-            vote_matrix,
-            k=query_k_max,
-            n_classes=n_cls_eff,
-            tfidf_dim=128,
-            laplace=1.0,
-            fallback_prior=fallback_prior,
-            seed=seed,
-        )
     elif query_selection_method == "batchbald":
         import numpy as _np
         n_cls_eff = len(LABEL_NAMES) or n_cls
@@ -1675,59 +1176,10 @@ def compute_query_selection_paper_method(
             class_balance_floor=int(class_balance_floor),
             pseudo_label_for_balance=_pseudo,
         )
-    elif query_selection_method in {"a1_margin", "a1_entropy_cb", "a1_v2_kl",
-                                      "text_cluster_a1err", "disagree_submod",
-                                      "a1_nbrconflict"}:
-        # A1-aware selection: delegate to a1_sel_ablation.a1_signals
-        import sys as _sys
-        from pathlib import Path as _P
-        _here = _P(__file__).resolve().parent
-        _a1dir = str(_here / "a1_sel_ablation")
-        if _a1dir not in _sys.path:
-            _sys.path.insert(0, _a1dir)
-        from a1_signals import compute_a1_selection  # type: ignore
-        # Need val_rows to fit A1; pass through global var bound earlier.
-        # `examples` is the universe (train); val labels come from val_rows in
-        # the outer caller context. analyze() must have val_rows available.
-        if a1_val_rows is None:
-            # Fall back to using examples themselves as their own val (will overfit
-            # — caller should pass a1_val_rows for honest results).
-            print("  [a1-aware] WARNING: a1_val_rows not provided; using train examples "
-                  "as val (results will be optimistic).")
-            _val_rows = examples
-        else:
-            _val_rows = a1_val_rows
-        selection = compute_a1_selection(
-            method=query_selection_method,
-            examples=examples,
-            vote_matrix=vote_matrix,
-            weights_by_idx=weights_by_idx,
-            val_rows=_val_rows,
-            val_label_key=label_key,
-            k=query_k_max,
-            n_classes=int(len(LABEL_NAMES)) if LABEL_NAMES else int(n_cls),
-            seed=seed,
-            class_balance_floor=int(class_balance_floor) if class_balance_floor else 1,
-        )
     else:
-        # Submodular facility location (default)
-        _pseudo = list(vote_stats["agg_label"])
-        selection = facility_location_greedy(
-            universe,
-            examples,
-            candidate_indices=None,
-            k_max=query_k_max,
-            k_min=query_k_min,
-            rho_target=query_rho_target,
-            sim_beta=query_sim_beta,
-            weights=weights_by_idx,
-            seed=seed,
-            text_sim_method=text_sim_method,
-            embedding_index=emb_index,
-            lf_coverage_index=lf_cov_index,
-            class_balance_floor=int(class_balance_floor),
-            n_classes=int(len(LABEL_NAMES)) if LABEL_NAMES else 0,
-            pseudo_label_for_balance=_pseudo,
+        raise ValueError(
+            f"Unknown query_selection_method: {query_selection_method!r}. "
+            "Choose: batchbald | random | uncertainty"
         )
 
     # Normalize method-identity fields so downstream (Improver/Refiner) knows the
@@ -1743,20 +1195,10 @@ def compute_query_selection_paper_method(
             "control baseline; examples drawn uniformly at random",
             "none",
         ),
-        "badge": (
-            "BADGE (k-means++ on gradient embeddings)",
-            "gradient-embedding seeds maximizing expected model update magnitude and diversity (Ash et al., 2020)",
-            "badge_distance_gain",
-        ),
         "batchbald": (
             "BatchBALD (greedy mutual information)",
             "batch mutual information I(Y_S;θ|X_S); selects examples that are jointly informative — high disagreement among annotators AND non-redundant across the batch (Kirsch et al., 2019)",
             "batch_mi_gain",
-        ),
-        "facility_location": (
-            "submodular facility location (weighted coverage)",
-            "diversity-maximizing selection covering the uncertainty-weighted universe with an adaptive rho stopping rule",
-            "facility_location_gain",
         ),
     }
     _strat_key = selection.get("strategy") or selection.get("method") or query_selection_method
@@ -1818,9 +1260,9 @@ def compute_query_selection_paper_method(
     # cluster so the Improver prompt can explain WHY these examples were chosen.
     #
     # Two sources of per-example scores:
-    #   - `per_example_scores`: dense vector over all N examples (BatchBALD bald,
-    #     BADGE gradient-norm squared, uncertainty importance weight). Covers
-    #     cluster members that weren't top-k-selected.
+    #   - `per_example_scores`: dense vector over all N examples (BatchBALD BALD,
+    #     uncertainty importance weight). Covers cluster members that weren't
+    #     top-k-selected.
     #   - selected_indices × acquisition_scores: sparse map covering just the
     #     top-k selected examples (all methods). Used for cluster CENTERS whose
     #     center acquisition score is the method-specific batch-level gain.
@@ -1973,7 +1415,7 @@ def compute_pool_summary(
     n = len(examples)
     n_lfs = len(annotators)
 
-    # per-example: vote depth = how many LFs fire (non-abstain)
+    # per-example: vote depth = how many annotators fire (non-abstain)
     vote_depths: List[int] = []
     is_covered: List[bool] = []
     for i in range(n):
@@ -2001,7 +1443,7 @@ def compute_pool_summary(
             class_covered[c] / class_counts[c] if class_counts[c] else 0.0
         )
 
-    # LF class balance: how many LFs primarily predict each class
+    # annotator class balance: how many annotators primarily predict each class
     lf_class_counts: Dict[str, int] = Counter()
     for j in range(n_lfs):
         label_votes = [v for v in vote_matrix[j] if v != ABSTAIN]
@@ -2030,7 +1472,7 @@ def compute_pool_summary(
 
 
 # -----------------------------------------------------------------------
-# B. Per-LF diagnostics
+# B. Per-annotator diagnostics
 # -----------------------------------------------------------------------
 
 def compute_lf_diagnostics(
@@ -2052,7 +1494,7 @@ def compute_lf_diagnostics(
             1 for i in active_sets[j]
             if vote_matrix[j][i] == int(examples[i].get(label_key, -99))
         )
-        # marginal coverage: examples ONLY this LF covers
+        # marginal coverage: examples ONLY this annotator covers
         others_union = set().union(*(active_sets[k] for k in range(n_lfs) if k != j)) if n_lfs > 1 else set()
         unique_covered = active_sets[j] - others_union
         marginal_coverage = len(unique_covered) / n if n else 0.0
@@ -2318,7 +1760,7 @@ def compute_error_analysis(
             })
         return results
 
-    # which LFs cause the most misclassifications
+    # which annotators cause the most misclassifications
     mis_lf_counts: Dict[str, int] = Counter()
     for i in misclassified_indices:
         y = int(examples[i].get(label_key, -1))
@@ -2387,10 +1829,6 @@ def compute_improvement_targets(
     pool_summary: Dict[str, Any],
     class_weights_override: Optional[Dict[str, float]] = None,
     max_examples_per_target: int = 8,
-    representative_strategy: str = "submodular",
-    representative_sim_beta: float = 0.5,
-    representative_k_min: int = 1,
-    representative_rho_target: Optional[float] = None,
     seed: int = 42,
 ) -> Dict[str, Any]:
     n = len(examples)
@@ -2456,26 +1894,14 @@ def compute_improvement_targets(
         cw = class_weights.get(cls_name, 1.0)
         value = len(indices) * cw * type_weight
 
-        # select representative examples (default: submodular facility location)
-        if representative_strategy == "random":
-            sampled_idx = rng.sample(indices, min(max_examples_per_target, len(indices)))
-            rep_selection = {
-                "strategy": "random_sample",
-                "k_max": min(max_examples_per_target, len(indices)),
-                "selected_indices": sampled_idx,
-                "selected_ids": [examples[i].get("id") for i in sampled_idx],
-            }
-        else:
-            rep_selection = facility_location_greedy(
-                indices,
-                examples,
-                k_max=min(max_examples_per_target, len(indices)),
-                sim_beta=representative_sim_beta,
-                k_min=representative_k_min,
-                rho_target=representative_rho_target,
-                seed=seed,
-            )
-            sampled_idx = rep_selection["selected_indices"]
+        # select representative examples (uniform random within target segment)
+        sampled_idx = rng.sample(indices, min(max_examples_per_target, len(indices)))
+        rep_selection = {
+            "strategy": "random_sample",
+            "k_max": min(max_examples_per_target, len(indices)),
+            "selected_indices": sampled_idx,
+            "selected_ids": [examples[i].get("id") for i in sampled_idx],
+        }
         sampled_examples: List[Dict[str, Any]] = []
         for i in sampled_idx:
             ex = examples[i]
@@ -2542,8 +1968,8 @@ def _build_recommendations(
                 "type": "class_gap",
                 "description": (
                     f"Class '{cls_name}' has recall {recall:.1%} with only "
-                    f"{n_lfs_for_class} LFs. {n_uncov} examples uncovered. "
-                    f"Generate 8-12 new {cls_name}-voting LFs."
+                    f"{n_lfs_for_class} annotators. {n_uncov} examples uncovered. "
+                    f"Generate 8-12 new {cls_name}-voting annotators."
                 ),
                 "target_class": cls_name,
                 "current_recall": recall,
@@ -2559,7 +1985,7 @@ def _build_recommendations(
             "type": "low_coverage",
             "description": (
                 f"Overall coverage is {coverage:.1%}. "
-                f"Target: >=80%. Generate LFs for the largest uncovered segments."
+                f"Target: >=80%. Generate annotators for the largest uncovered segments."
             ),
             "current_coverage": coverage,
         })
@@ -2574,7 +2000,7 @@ def _build_recommendations(
             "type": "fragile_labels",
             "description": (
                 f"{n_fragile}/{n_covered} covered examples ({n_fragile/max(n_covered,1):.0%}) "
-                f"have only 1 LF firing. Generate corroborating LFs to strengthen these."
+                f"have only 1 annotator firing. Generate corroborating annotators to strengthen these."
             ),
             "n_fragile": n_fragile,
         })
@@ -2588,7 +2014,7 @@ def _build_recommendations(
             "type": "high_redundancy",
             "description": (
                 f"Average pairwise Jaccard overlap is {avg_jaccard:.2f}. "
-                f"New LFs should target DIFFERENT examples than existing ones."
+                f"New annotators should target DIFFERENT examples than existing ones."
             ),
         })
 
@@ -2619,12 +2045,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Analyze annotator pool errors and produce an improvement brief."
     )
     p.add_argument(
-        "--task_name", type=str, default="youtube_spam",
-        help="Task name (youtube_spam, imdb, agnews). Sets label names and features.",
+        "--task_name", type=str, default="chemprot",
+        help="Task name (chemprot, fever, pubmed). Sets label names and features.",
     )
     p.add_argument(
         "--pool_module", type=Path,
-        default=Path("annotators/youtube_spam/initial_pool.py"),
+        default=Path("annotators/chemprot/initial_pool.py"),
     )
     p.add_argument(
         "--data_path", type=Path,
@@ -2636,42 +2062,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--out_path", type=Path,
-        default=Path("runs/youtube_spam/initial/improvement_brief.json"),
+        default=Path("runs/chemprot/initial/improvement_brief.json"),
     )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max_examples_per_target", type=int, default=8)
-    p.add_argument(
-        "--representative_strategy",
-        type=str,
-        choices=["submodular", "random"],
-        default="submodular",
-        help="How to select representative examples within each target segment.",
-    )
-    p.add_argument("--representative_sim_beta", type=float, default=0.5)
-    p.add_argument("--representative_k_min", type=int, default=1)
-    p.add_argument(
-        "--representative_rho_target",
-        type=float,
-        default=0.0,
-        help="If >0, adaptively stop when achieved_rho >= this value.",
-    )
 
-    # Paper-aligned submodular query selection (global batch)
     p.add_argument("--query_selection_method", type=str,
-        choices=["submodular", "uncertainty", "random", "badge", "batchbald",
-                  "a1_margin", "a1_entropy_cb", "a1_v2_kl",
-                  "text_cluster_a1err", "disagree_submod", "a1_nbrconflict"],
-        default="submodular",
-        help="Query selection strategy: submodular (facility location), "
-             "uncertainty (top-k by w_i), random, "
-             "badge (k-means++ on gradient embeddings, Ash et al. 2020), "
-             "batchbald (MI-greedy with MC joint entropy, Kirsch et al. 2019), "
-             "or a1-aware: a1_margin/a1_entropy_cb/a1_v2_kl/text_cluster_a1err/"
-             "disagree_submod/a1_nbrconflict (see scripts/a1_sel_ablation/a1_signals.py).")
-    p.add_argument("--a1_val_path", type=Path, default=None,
-                   help="Path to val.jsonl for fitting A1 aggregator (only used by "
-                        "a1-aware selection methods). If omitted, train is used as "
-                        "self-val (overfits).")
+        choices=["batchbald", "uncertainty", "random"],
+        default="batchbald",
+        help="Query selection strategy: batchbald (MI-greedy with MC joint "
+             "entropy, Kirsch et al. 2019; paper default), uncertainty "
+             "(top-k by importance-weight w_i), random (control baseline).")
     p.add_argument("--seed_size", type=int, default=200, help="Labeled seed size for estimating class stats (<=0 uses seed_fraction).")
     p.add_argument("--seed_fraction", type=float, default=0.1, help="Used only when seed_size<=0.")
     p.add_argument("--class_weight_epsilon", type=float, default=0.01)
@@ -2681,7 +2082,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--query_rho_target", type=float, default=0.85, help="If <=0, disable adaptive stopping and select k_max.")
     p.add_argument("--query_sim_beta", type=float, default=0.5, help="Similarity mix: beta*meta + (1-beta)*text_sim.")
     p.add_argument("--text_sim_method", type=str, choices=["jaccard", "tfidf", "semantic", "hybrid"], default="jaccard",
-                   help="Text similarity method: 'jaccard' (token overlap), 'tfidf' (TF-IDF cosine), 'semantic' (precomputed embeddings), or 'hybrid' (TF-IDF + LF coverage, adaptive alpha).")
+                   help="Text similarity method: 'jaccard' (token overlap), 'tfidf' (TF-IDF cosine), 'semantic' (precomputed embeddings), or 'hybrid' (TF-IDF + annotator coverage, adaptive alpha).")
     p.add_argument("--embeddings_path", type=str, default=None,
                    help="Path to .npz file with precomputed embeddings (required when text_sim_method=semantic).")
     p.add_argument("--generation_memory", type=Path, default=None,
@@ -2723,7 +2124,7 @@ def main() -> None:
     examples = read_jsonl(args.data_path)
     print(f"  {len(examples)} examples")
 
-    print("Running LFs ...")
+    print("Running annotators ...")
     vote_matrix = run_pool(annotators, examples)
 
     print("Computing pool summary ...")
@@ -2731,7 +2132,7 @@ def main() -> None:
     print(f"  coverage={pool_summary['coverage']:.3f}  "
           f"class_recall={pool_summary['class_recall']}")
 
-    print("Computing LF diagnostics ...")
+    print("Computing annotator diagnostics ...")
     lf_diag = compute_lf_diagnostics(annotators, vote_matrix, examples, args.label_key)
     print(f"  avg_jaccard={lf_diag['avg_pairwise_jaccard']}  "
           f"coverage_efficiency={lf_diag['coverage_efficiency']}")
@@ -2775,12 +2176,6 @@ def main() -> None:
         except Exception as _e:
             print(f"  Warning: could not build carryover map: {_e}")
 
-    # Load val rows if a1-aware selection requested
-    _a1_val_rows = None
-    if args.a1_val_path is not None and args.a1_val_path.exists():
-        _a1_val_rows = read_jsonl(args.a1_val_path)
-        print(f"  Loaded {len(_a1_val_rows)} val rows from {args.a1_val_path} for A1 fit")
-
     print(f"Computing query selection (method={args.query_selection_method}) ...")
     query_selection = compute_query_selection_paper_method(
         annotators,
@@ -2803,7 +2198,6 @@ def main() -> None:
         carryover_lambda=float(args.carryover_lambda),
         carryover_age_cap=int(args.carryover_age_cap),
         class_balance_floor=int(args.class_balance_floor),
-        a1_val_rows=_a1_val_rows,
     )
     sel = query_selection.get("selection", {}) or {}
     print(
@@ -2821,10 +2215,6 @@ def main() -> None:
         pool_summary,
         class_weights_override=(query_selection.get("alpha_by_name") or None),
         max_examples_per_target=args.max_examples_per_target,
-        representative_strategy=args.representative_strategy,
-        representative_sim_beta=args.representative_sim_beta,
-        representative_k_min=args.representative_k_min,
-        representative_rho_target=(args.representative_rho_target if args.representative_rho_target > 0 else None),
         seed=args.seed,
     )
     print(f"  {len(targets['targets'])} targets, top recommendations:")

@@ -10,7 +10,7 @@ Modes (mirrors single-label):
   both          : ws + cft
   golden_only   : skip ws; train on N gold samples directly
 
-Reads noisy WS labels from ``<run_root>/eval/train_labeled.jsonl`` (key
+Reads noisy annotator labels from ``<run_root>/eval/train_labeled.jsonl`` (key
 ``aggregated_labels.majority_vote: List[int]``). Gold labels live in raw
 ``train.jsonl`` under ``true_labels: List[int]``.
 """
@@ -31,7 +31,7 @@ from transformers import (
 )
 from peft import LoraConfig, TaskType, get_peft_model
 
-from src.downstream.metrics import hf_compute_metrics_ml
+from src.downstream.metrics import hf_compute_metrics_multilabel
 from src.utils.io import read_jsonl
 
 
@@ -131,7 +131,7 @@ def train_eval_ml(model, tok, train_texts, train_y, val_texts, val_y,
         model=model, args=args,
         train_dataset=train_ds, eval_dataset=val_ds,
         processing_class=tok, data_collator=collator,
-        compute_metrics=hf_compute_metrics_ml,
+        compute_metrics=hf_compute_metrics_multilabel,
     )
     print(f"\n[train-ml] {len(train_ds)} train, {len(val_ds)} val, {len(test_ds)} test")
     trainer.train()
@@ -185,13 +185,13 @@ def main():
     test_y = [to_multihot(r.get("true_labels") or [], K) for r in test_gold]
     print(f"[load] train={len(train_gold)} val={len(val_gold)} test={len(test_gold)}")
 
-    # ── Load noisy WS labels ──
+    # ── Load noisy annotator labels ──
     ws_path = args.run_root / "eval" / "train_labeled.jsonl"
     if not ws_path.exists():
         ws_path = args.run_root / "iter_00" / "eval" / "train_labeled.jsonl"
     train_y_noisy: Optional[List[List[float]]] = None
     if args.mode in ("ws", "cft", "both"):
-        assert ws_path.exists(), f"WS labels missing: {ws_path}"
+        assert ws_path.exists(), f"annotator labels missing: {ws_path}"
         ws_rows = read_jsonl(ws_path)
         id_to_noisy: Dict[str, List[int]] = {}
         for r in ws_rows:
@@ -211,9 +211,9 @@ def main():
         print(f"[ws] noisy avg card {avg_card_noisy:.2f} (gold {avg_card_gold:.2f}), "
               f"cov {cov_noisy:.3f}")
 
-    # ── WS pass (full noisy train) ──
+    # ── noisy-label pass (full noisy train) ──
     if args.mode in ("ws", "cft", "both"):
-        print("\n========== WS pass (full noisy train) ==========")
+        print("\n========== noisy-label pass (full noisy train) ==========")
         model, tok = make_lora_model_ml(args.model_name, K, args.lora_r,
                                         args.lora_alpha, args.lora_dropout,
                                         target_mods)
@@ -229,12 +229,12 @@ def main():
             "model_name": args.model_name, "num_train": len(train_texts_gold),
             "val_metrics": val_m, "test_metrics": test_m,
         }, indent=2))
-        print(f"  WS  val macF1={val_m['macro_f1']:.4f}  test macF1={test_m['macro_f1']:.4f}")
+        print(f"  noisy-label  val macF1={val_m['macro_f1']:.4f}  test macF1={test_m['macro_f1']:.4f}")
         ws_model_dir = args.out_dir / "ws_adapter"
         try:
             ws_trainer.save_model(str(ws_model_dir))
         except Exception as e:
-            print(f"  [warn] saving WS adapter failed: {e}")
+            print(f"  [warn] saving noisy-trained adapter failed: {e}")
         del model, ws_trainer
         torch.cuda.empty_cache()
 
@@ -268,11 +268,11 @@ def main():
             del model
             torch.cuda.empty_cache()
 
-    # ── CFT cells (init from WS adapter, fine-tune on clean N) ──
+    # ── CFT cells (init from noisy-trained adapter, fine-tune on clean N) ──
     if args.mode in ("cft", "both"):
         ws_model_dir = args.out_dir / "ws_adapter"
         if not ws_model_dir.exists():
-            print("  [warn] CFT requires WS first -- ws_adapter missing; skipping CFT")
+            print("  [warn] CFT requires noisy-label first -- ws_adapter missing; skipping CFT")
         else:
             clean_sizes = [int(x) for x in args.clean_sizes.split(",")]
             for N in clean_sizes:

@@ -2,11 +2,11 @@
 """EvoPool: Improver agent — generate NEW compositional annotators that target
 the failure clusters surfaced by the analyzer.
 
-Production: C1_v2 per-class budget allocation. Reserve K of n_calls batches
-for low-F1 classes (K classes with prev-iter F1 < f1_threshold, capped at
-max_targets). Remaining batches stay broad (cluster-based). Hybrid design:
-if a per-class batch over-fits, broad batches still cover the iter — avoids
-the C1 starvation failure mode.
+Per-class Improver budget: reserve K of n_calls batches for the K lowest-F1
+classes (prev-iter F1 < f1_threshold, capped at max_targets); remaining
+batches stay broad (cluster-based). Broad batches cover the iter even when a
+per-class batch over-fits, so low-F1 classes get targeted attention without
+starving the rest of the pool.
 
 Reads:
   --pool_module    current pool.py
@@ -38,7 +38,7 @@ from src.pipeline.common import (
 
 # Task-aware example pattern: claim-verification tasks need metadata-comparison
 # examples, not the lexical text-regex pattern.
-_VERIFICATION_TASKS = {"fever", "vitaminc", "scifact", "anli"}
+_VERIFICATION_TASKS = {"fever"}
 
 _CLASSIFICATION_EXAMPLE_PATTERN = """\
     import re
@@ -150,11 +150,7 @@ Output ONE python ```code block``` containing helpers + new lf_* together.
 
 
 def _brief_clusters(brief: dict) -> List[dict]:
-    """Locate the cluster list inside a brief.
-
-    analyzer writes clusters under brief["query_selection"]["clusters"]; older
-    consumer code looked at brief["clusters"]. Fall through both shapes.
-    """
+    """Locate the cluster list in a brief (supports both modern and legacy schemas)."""
     qs = brief.get("query_selection") or {}
     return (qs.get("clusters")
             or brief.get("clusters")
@@ -163,7 +159,6 @@ def _brief_clusters(brief: dict) -> List[dict]:
 
 
 def render_clusters(brief: dict, max_clusters: int = 6, max_examples_per_cluster: int = 6) -> str:
-    """Render top clusters as a prompt block for the Improver."""
     clusters = _brief_clusters(brief)
     if not clusters:
         return "  (no clusters surfaced — generate diverse class-targeted annotators broadly)"
@@ -207,8 +202,7 @@ def main():
     p.add_argument("--max_output_tokens", type=int, default=2400)
     p.add_argument("--cache_dir", type=Path,
                    default=Path("runs/cache/openai_responses/evopool_imp"))
-    p.add_argument("--min_precision", type=float, default=0.25,
-                   help="D_v6 production floor.")
+    p.add_argument("--min_precision", type=float, default=0.25)
     p.add_argument("--min_fires", type=int, default=5)
     p.add_argument("--max_jaccard_overlap", type=float, default=0.95,
                    help="Drop new annotator if firing pattern overlaps existing one by > this.")
@@ -218,11 +212,11 @@ def main():
                    help="Comma-separated class IDs to skip in cluster targeting "
                         "(passed by orchestrator from viability history).")
 
-    # ─── C1_v2: per-class Improver budget allocation (production) ───
-    p.add_argument("--c1v2_targets", type=str, default="",
+    # Per-class Improver budget allocation
+    p.add_argument("--per_class_targets", type=str, default="",
                    help="Comma-sep class IDs to dedicate 1 batch each to "
                         "(e.g. '6,9,7' for low-F1 long-tail classes).")
-    p.add_argument("--c1v2_n_pos_examples", type=int, default=8,
+    p.add_argument("--per_class_n_pos_examples", type=int, default=8,
                    help="Positive train examples per per-class batch.")
     args = p.parse_args()
 
@@ -263,18 +257,18 @@ def main():
         denylist = denylist[:80]
     print(f"[IMP] denylist: {len(denylist)} names")
 
-    # ─── C1_v2: parse per-class targets ───
-    c1v2_targets: list = []
-    if args.c1v2_targets.strip():
-        for tok in args.c1v2_targets.split(","):
+    # Parse per-class targets
+    per_class_targets: list = []
+    if args.per_class_targets.strip():
+        for tok in args.per_class_targets.split(","):
             tok = tok.strip()
             if tok.isdigit():
-                c1v2_targets.append(int(tok))
-        c1v2_targets = c1v2_targets[: max(0, args.n_calls - 1)]
+                per_class_targets.append(int(tok))
+        per_class_targets = per_class_targets[: max(0, args.n_calls - 1)]
 
     # Build per-class context: positive train examples per target class
-    c1v2_pos_by_class: dict = {}
-    if c1v2_targets:
+    per_class_pos_examples: dict = {}
+    if per_class_targets:
         import random as _rnd
         rng = _rnd.Random(42)
         train_by_cls: dict = {}
@@ -286,12 +280,12 @@ def main():
             if c < 0:
                 continue
             train_by_cls.setdefault(c, []).append(r)
-        for c in c1v2_targets:
+        for c in per_class_targets:
             pool = train_by_cls.get(c, [])
-            n = min(args.c1v2_n_pos_examples, len(pool))
-            c1v2_pos_by_class[c] = rng.sample(pool, n) if n else []
-        print(f"[IMP] C1_v2: targeting low-F1 classes {c1v2_targets} "
-              f"(1 dedicated batch each + {args.n_calls - len(c1v2_targets)} broad batches)")
+            n = min(args.per_class_n_pos_examples, len(pool))
+            per_class_pos_examples[c] = rng.sample(pool, n) if n else []
+        print(f"[PER-CLASS] targeting low-F1 classes {per_class_targets} "
+              f"(1 dedicated batch each + {args.n_calls - len(per_class_targets)} broad batches)")
 
     def _build_per_class_prompt(class_id: int, batch_idx: int, total: int) -> str:
         class_name = cfg.label_names.get(class_id, str(class_id))
@@ -302,7 +296,7 @@ def main():
             f"  {c} = {n}: {(cfg.class_guardrails.get(c) or '')[:120]}"
             for c, n in other_classes[:6]
         )
-        pos_examples = c1v2_pos_by_class.get(class_id, [])
+        pos_examples = per_class_pos_examples.get(class_id, [])
         pos_text = "\n".join(
             f"  [{i+1}] {(r.get('text') or '').strip()[:280]}"
             for i, r in enumerate(pos_examples)
@@ -351,14 +345,14 @@ def main():
 
     # Build batch plan: K per-class first, then (n_calls - K) broad
     batch_plan: list = []
-    for cls_id in c1v2_targets:
+    for cls_id in per_class_targets:
         batch_plan.append((f"c{cls_id}", _build_per_class_prompt(cls_id, len(batch_plan), args.n_calls)))
     n_broad = args.n_calls - len(batch_plan)
     for j in range(n_broad):
         batch_plan.append((f"b{len(batch_plan)+1}", _build_broad_prompt(len(batch_plan), args.n_calls)))
 
     print(f"[IMP] generating {len(batch_plan)} batches "
-          f"({len(c1v2_targets)} per-class + {n_broad} broad)")
+          f"({len(per_class_targets)} per-class + {n_broad} broad)")
     candidates = []
     seen = set(denylist)
     for i, (btag, prompt) in enumerate(batch_plan):

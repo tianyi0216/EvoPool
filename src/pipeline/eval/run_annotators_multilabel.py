@@ -1,27 +1,10 @@
 """EvoPool: multi-label annotator pool evaluator (per-class OR aggregation).
 
-Mirrors run_annotators.py but with multi-label semantics:
-  - Aggregation = per-class OR (predict c if any LF voted c) by default
-  - True labels are sets / binary vectors
-  - Output report.json schema:
-      splits: [{
-        split: "train"|"val"|"test",
-        n_examples: N,
-        lf_metrics: [{name, fires, coverage, polarity, hit_rate}],
-        aggregation: {
-          majority_vote: {
-            strategy: "or_aggregation",
-            coverage_anyone, avg_pred_card, avg_true_card,
-            macro_f1, micro_f1, weighted_f1, sample_f1,
-            subset_acc, hamming_loss,
-            per_class: {"0": {f1, precision, recall, n_pred, n_gold, tp}, ...}
-          }
-        }
-      }, ...]
-  - Labeled JSONL per split with `votes` + `aggregated_labels.majority_vote: [int]` (set of positive classes)
+Multi-label counterpart to run_annotators.py: aggregation is per-class OR
+(predict c if any annotator voted c); true labels are sets / binary vectors.
 
 Usage:
-  python -m scripts.multilabel.ml_run_annotators \
+  python -m src.pipeline.eval.run_annotators_multilabel \
     --pool_module runs/pubmed/baselines/.../pool.py \
     --splits data/processed/pubmed/{train,val,test}.jsonl \
     --n_classes 14 \
@@ -40,15 +23,15 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 import numpy as np
 
-# Allow `python -m scripts.multilabel.ml_run_annotators` or direct execution
+# Allow direct execution by adding sibling dir to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ml_data import (
+from multilabel_data import (
     aggregate_majority_or,
     aggregate_majority_threshold,
     load_multilabel_jsonl,
     votes_to_binary_matrix,
 )
-from ml_metrics import multilabel_summary, per_class_binary_metrics
+from multilabel_metrics import multilabel_summary, per_class_binary_metrics
 
 ABSTAIN: int = -1
 
@@ -73,7 +56,7 @@ def get_annotators(mod: Any) -> List[Tuple[str, Callable]]:
 
 
 # ---------------------------------------------------------------------------
-# LF execution
+# annotator execution
 # ---------------------------------------------------------------------------
 def run_single_lf(lf: Callable, examples: Sequence[Dict[str, Any]]) -> List[int]:
     votes: List[int] = []
@@ -99,13 +82,13 @@ def run_pool(annotators: List[Tuple[str, Callable]],
 
 
 # ---------------------------------------------------------------------------
-# Per-LF metrics on multi-label gold
+# Per-annotator metrics on multi-label gold
 # ---------------------------------------------------------------------------
 def per_lf_metrics(votes_matrix: List[List[int]],
                    lf_names: List[str],
                    Y: np.ndarray,
                    n_classes: int) -> List[Dict[str, Any]]:
-    """For each LF: fires, coverage, polarity (set of classes it votes for),
+    """For each annotator: fires, coverage, polarity (set of classes it votes for),
     and per-class hit-rate (precision per class it targets)."""
     N, K = Y.shape
     out = []
@@ -113,10 +96,10 @@ def per_lf_metrics(votes_matrix: List[List[int]],
         v = np.array(votes_col)
         fires = int((v != ABSTAIN).sum())
         cov = fires / N if N > 0 else 0.0
-        # Polarity = classes this LF ever voted
+        # Polarity = classes this annotator ever voted
         polarity = sorted({int(x) for x in v if x != ABSTAIN and 0 <= int(x) < K})
-        # Per-class hit-rate: when LF votes c, what fraction of those samples
-        # actually have class c positive? (LF-precision under multi-label OR)
+        # Per-class hit-rate: when annotator votes c, what fraction of those samples
+        # actually have class c positive? (annotator-precision under multi-label OR)
         hit_per_class: Dict[int, Dict[str, float]] = {}
         for c in polarity:
             mask = (v == c)
@@ -148,7 +131,7 @@ def evaluate_split(split_name: str,
                    annotators: List[Tuple[str, Callable]],
                    n_classes: int,
                    n_workers: int = 8) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """Run LF pool on split, aggregate, return (report_block, labeled_rows)."""
+    """Run annotator pool on split, aggregate, return (report_block, labeled_rows)."""
     if not annotators:
         # Empty pool — emit zero predictions
         Y_pred = np.zeros_like(Y)

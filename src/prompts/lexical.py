@@ -2,23 +2,19 @@
 
 This is the production prompt for tasks where each example is a single text
 span and the annotator decides a class label from lexical/metadata patterns
-(e.g. ChemProt relation extraction, AG News topic classification, Banking77
-intent classification, DDI drug-drug interaction).
+(e.g. ChemProt relation extraction, PubMed multi-label MeSH tagging).
 
-For claim-vs-evidence verification tasks (FEVER, SciFact, VitaminC, ANLI),
-use ``verification.py`` instead — its prompt is grounded on pre-computed
-comparison features (token_overlap, negation_mismatch, nli_contradict, ...).
+For claim-vs-evidence verification tasks (e.g. FEVER), use ``verification.py``
+instead — its prompt is grounded on pre-computed comparison features
+(token_overlap, negation_mismatch, nli_contradict, ...).
 
-The B-axis ablation found this lexical, no-CoT, permissive-helpers prompt
-("B1_V1") dominates CoT, rationale, self-debug, distillation and embedding
-variants on long-tail biomedical classes. CoT rationalizes wrong predictions
-on minority classes; lexical patterns over metadata are the right primitive.
+Lexical patterns over metadata are the primary primitive for long-tail classes.
 """
 
 LEXICAL_INSTRUCTION = """\
 WRITE COMPOSITIONAL ANNOTATORS WITH MULTI-STEP REASONING.
 
-PHILOSOPHY: each labeling function should be a *compositional Python program*,
+PHILOSOPHY: each annotator should be a *compositional Python program*,
 not a flat if-else. Use whatever Python feature makes the rule expressive
 and correct: helper predicates, regex compilation, for-loops over keyword
 banks, list/dict comprehensions, even imports if useful.
@@ -26,7 +22,7 @@ banks, list/dict comprehensions, even imports if useful.
 REQUIREMENTS
 - Define helper boolean predicates as module-level functions (e.g.
   ``has_inhibition_keywords(text)``, ``has_chemical_target(meta)``).
-- Define each labeling function as ``lf_<descriptive_name>(ex)``. The
+- Define each annotator as ``lf_<descriptive_name>(ex)``. The
   ``lf_*`` body should COMPOSE the helpers via explicit IF-ELIF-ELSE.
 - Each lf_* must call AT LEAST 2 helper predicates AND combine with at
   least one direct check (text pattern or metadata field).

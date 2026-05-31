@@ -1,10 +1,10 @@
 """EvoPool: multi-label downstream training (BCE loss on RoBERTa-large).
 
 Trains a multi-label classifier (HF ``problem_type="multi_label_classification"``)
-on EvoPool annotator pseudo-labels. Supports WS pass, CFT (warm-up on noisy then
+on EvoPool annotator pseudo-labels. Supports noisy-label pass, CFT (warm-up on noisy then
 fine-tune on clean), and golden-only baselines.
 
-Reads noisy WS labels from ``<run_root>/eval/train_labeled.jsonl`` (key
+Reads noisy annotator labels from ``<run_root>/eval/train_labeled.jsonl`` (key
 ``aggregated_labels.majority_vote: List[int]``). Gold labels come from raw
 ``train.jsonl`` under ``true_labels: List[int]``.
 """
@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from src.downstream.metrics import compute_ml_metrics, hf_compute_metrics_ml
+from src.downstream.metrics import compute_multilabel_metrics, hf_compute_metrics_multilabel
 from src.utils.io import read_jsonl
 
 
@@ -111,7 +111,7 @@ def train_and_eval(
         remove_unused_columns=False,
     )
     trainer = Trainer(model=model, args=args, train_dataset=tr_ds,
-                      eval_dataset=va_ds, compute_metrics=hf_compute_metrics_ml)
+                      eval_dataset=va_ds, compute_metrics=hf_compute_metrics_multilabel)
     trainer.train()
 
     def _probs(ds):
@@ -120,15 +120,15 @@ def train_and_eval(
 
     val_probs = _probs(va_ds)
     test_probs = _probs(te_ds)
-    val_m = compute_ml_metrics(val_probs, val_labels)
-    test_m = compute_ml_metrics(test_probs, test_labels)
+    val_m = compute_multilabel_metrics(val_probs, val_labels)
+    test_m = compute_multilabel_metrics(test_probs, test_labels)
     return trainer, val_m, test_m
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--run_root", type=Path, required=True,
-                   help="Path with eval/{train,val,test}_labeled.jsonl (noisy WS labels)")
+                   help="Path with eval/{train,val,test}_labeled.jsonl (noisy annotator labels)")
     p.add_argument("--train_path", type=Path, required=True)
     p.add_argument("--val_path", type=Path, required=True)
     p.add_argument("--test_path", type=Path, required=True)
@@ -192,7 +192,7 @@ def main():
     }
 
     if args.mode in ("ws", "cft", "both"):
-        print(f"\n========== WS train (n={len(train_texts_gold)} noisy) ==========\n")
+        print(f"\n========== noisy-label train (n={len(train_texts_gold)} noisy) ==========\n")
         t0 = time.time()
         trainer, vm, tm = train_and_eval(
             train_texts_gold, train_y_noisy, val_texts, val_y, test_texts, test_y,
@@ -206,7 +206,7 @@ def main():
             trainer.save_model(str(ws_ckpt))
         except Exception as e:
             print(f"  [warn] saving ws_model failed: {e}")
-        print(f"  WS  val macF1={vm['macro_f1']:.4f} test macF1={tm['macro_f1']:.4f}")
+        print(f"  noisy-label  val macF1={vm['macro_f1']:.4f} test macF1={tm['macro_f1']:.4f}")
 
     if args.mode in ("golden_only", "both"):
         clean_sizes = [int(x) for x in args.clean_sizes.split(",")]
@@ -234,7 +234,7 @@ def main():
     if args.mode in ("cft", "both"):
         ws_ckpt = args.out_dir / "ws_model"
         if not ws_ckpt.exists():
-            print("  [error] CFT requires WS first; ws_model missing"); sys.exit(2)
+            print("  [error] CFT requires noisy-label first; ws_model missing"); sys.exit(2)
         clean_sizes = [int(x) for x in args.clean_sizes.split(",")]
         results["cft"] = {}
         for N in clean_sizes:
@@ -258,7 +258,7 @@ def main():
             print(f"  CFT  N={N}  val macF1={vm['macro_f1']:.4f} "
                   f"test macF1={tm['macro_f1']:.4f}")
 
-    out_path = args.out_dir / "ml_results.json"
+    out_path = args.out_dir / "multilabel_results.json"
     out_path.write_text(json.dumps(results, indent=2))
     print(f"\n-> Wrote {out_path}")
 
@@ -269,7 +269,7 @@ def main():
             continue
         if cell_name == "ws":
             tm = cell["test_metrics"]
-            print(f"  WS              test macF1={tm['macro_f1']:.4f} "
+            print(f"  noisy-label              test macF1={tm['macro_f1']:.4f} "
                   f"microF1={tm['micro_f1']:.4f} weightedF1={tm['weighted_f1']:.4f}")
         else:
             for k, v in cell.items():

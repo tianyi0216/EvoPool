@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""EvoPool: Refiner agent — keyword-bank expansion of high-precision-low-coverage
-annotators.
+"""EvoPool: Refiner agent — keyword-bank expansion of high-prec low-cov annotators.
+
+Picks annotators with precision >= min_precision_to_refine AND coverage <=
+max_coverage_to_refine, then asks the LLM for 2-3 broader variants per target
+via keyword-bank expansion / relaxed conditions / structural variants.
 
 Reads:
   --pool_module    current pool.py
   --pool_eval_dir  eval/ dir from src.pipeline.eval.run_annotators
-
-Picks annotators with precision >= min_precision_to_refine AND coverage <= max_coverage_to_refine
-(high-prec low-cov). For each, asks the LLM to write 2-3 broader variants using
-keyword-bank expansion / relaxed conditions / structural variants.
 
 Writes:
   <out_dir>/pool_fragment.py

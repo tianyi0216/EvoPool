@@ -1,21 +1,16 @@
-"""EvoPool: shared pipeline utilities (task_type-aware: single-label + multi-label).
+"""EvoPool: shared pipeline utilities for both single-label and multi-label task variants.
 
-Merges the historical _common.py (single-label) and ml_common.py (multi-label)
-into one module. Dispatch keys:
+Dispatch keys:
   - read_jsonl: returns rows with BOTH `true_label` (int) and `true_labels`
-    (List[int]) populated when the source contains either. Downstream
-    single-label code reads `true_label`; multi-label code reads `true_labels`.
-  - run_eval_subprocess: routes to eval/run_annotators.py for single-label
-    tasks or eval/run_annotators_ml.py for multi-label tasks based on
-    `task_type` (resolved from src.tasks.configs).
-  - run_analyze_subprocess: same routing for the error-cluster analyzer.
+    (List[int]) populated when the source contains either, so single-label
+    and multi-label code read the same row without branching.
+  - run_eval_subprocess / run_analyze_subprocess: route to single-label vs
+    multi-label evaluator/analyzer based on `task_type` (src.tasks.configs).
 
-Keeps:
-  - AST-based helper-prefix renamer (collision avoidance across agents/iters).
-  - AST `_ListPurger` for pool-pruning safety (used by orchestrator).
-  - Pool I/O (write_pool, read_pool_blocks_and_lfs, extract_lf_sources_per_class).
-  - Per-LF evaluation + threshold/Jaccard/consistency filters.
-  - EVOPOOL_FAST_EVAL env knob (skip train split during iter-loop eval).
+Also provides: AST helper-prefix renamer (collision avoidance), ListPurger
+(pool-prune safety), pool I/O, per-annotator evaluation, and filter chains
+(threshold / Jaccard / train↔val consistency). Set EVOPOOL_FAST_EVAL=1 to
+skip the train split during iter-loop eval.
 """
 from __future__ import annotations
 
@@ -26,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
-# Re-export the LLM call + LF parsing utilities from src.prompts so agents can
+# Re-export the LLM call + annotator parsing utilities from src.prompts so agents can
 # `from src.pipeline.common import call_llm, ...` without knowing the layout.
 from src.prompts.utils import (
     parse_lfs_from_response,
@@ -43,13 +38,10 @@ from src.tasks.configs import get_task_config
 # ────────────────────────────────────────────────────────────────────────
 
 def prefix_helpers_in_block(block_src: str, tag: str) -> str:
-    """Rename all top-level functions (NOT lf_*) and Assign constants in
-    `block_src` by prefixing with `_<tag>_`. Rewrites all references to those
-    names within the block. Returns transformed source.
+    """Prefix all top-level helpers (NOT lf_*) and Assign constants with `_<tag>_`.
 
-    Guarantees that two blocks from different agents (e.g., Generator vs
-    Improver iter 3) cannot have helper-name collisions even if both define
-    `has_inhibition_keywords`.
+    Rewrites references within the block. Prevents helper-name collisions
+    across agents/iters even when both blocks define `has_inhibition_keywords`.
     """
     try:
         tree = ast.parse(block_src)
@@ -91,10 +83,10 @@ def prefix_helpers_in_block(block_src: str, tag: str) -> str:
 
 
 class ListPurger(ast.NodeTransformer):
-    """AST transformer that drops named identifiers from every list literal.
+    """AST transformer dropping named identifiers from every list literal.
 
-    Used by the orchestrator to clean ANNOTATORS / bundled-LF lists after a
-    pool prune so the rewritten pool.py imports without NameError.
+    Orchestrator uses this to clean ANNOTATORS / bundled-annotator lists after pool
+    prune so the rewritten pool.py imports without NameError.
     """
 
     def __init__(self, drop_names: Set[str]):
@@ -129,11 +121,7 @@ ABSTAIN: int = -1
 
 
 def write_pool(out_path: Path, blocks: List[str], lf_names: List[str], comment: str = ""):
-    """Write a pool.py from a list of code blocks + lf_* names to register.
-
-    Blocks are emitted in the order given. Caller decides ordering; the helper-
-    prefix renamer guarantees no cross-block collisions.
-    """
+    """Write pool.py from code blocks + lf_* names (caller orders blocks)."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     seen_blocks: Set[str] = set()
     with open(out_path, "w", encoding="utf-8") as f:
@@ -153,7 +141,6 @@ def write_pool(out_path: Path, blocks: List[str], lf_names: List[str], comment: 
 
 
 def read_pool_blocks_and_lfs(pool_path: Path) -> Tuple[List[str], List[str]]:
-    """Read a pool.py, return (one-block source, list of lf_* names)."""
     src = pool_path.read_text(encoding="utf-8")
     tree = ast.parse(src)
     lf_names = [n.name for n in tree.body
@@ -162,7 +149,7 @@ def read_pool_blocks_and_lfs(pool_path: Path) -> Tuple[List[str], List[str]]:
 
 
 def extract_lf_sources_per_class(pool_path: Path) -> List[Dict[str, Any]]:
-    """For Refiner: list each lf_* function with its individual source extracted."""
+    """For Refiner: per-lf_* source segment extracted from pool.py."""
     src = pool_path.read_text(encoding="utf-8")
     tree = ast.parse(src)
     lines = src.splitlines(keepends=True)
@@ -179,7 +166,6 @@ def extract_lf_sources_per_class(pool_path: Path) -> List[Dict[str, Any]]:
 # ────────────────────────────────────────────────────────────────────────
 
 def load_pool_callables(pool_path: Path) -> List[Tuple[str, Callable]]:
-    """Import the pool.py as a module and return list of (name, callable)."""
     import importlib.util
     spec = importlib.util.spec_from_file_location(f"evopool_pool_{pool_path.parent.name}", pool_path)
     mod = importlib.util.module_from_spec(spec)
@@ -228,7 +214,6 @@ def evaluate_lf_on_split(lf: Callable, examples: Sequence[Dict[str, Any]],
 def filter_lfs_by_threshold(lfs_with_metrics: List[Tuple[str, str, Dict]],
                               min_precision: float = 0.25,
                               min_fires: int = 5) -> List[Tuple[str, str, Dict]]:
-    """Keep annotators with prec >= floor AND fires >= floor."""
     return [(n, src, m) for n, src, m in lfs_with_metrics
             if (m.get("precision") or 0) >= min_precision
             and (m.get("fires") or 0) >= min_fires]
@@ -236,7 +221,7 @@ def filter_lfs_by_threshold(lfs_with_metrics: List[Tuple[str, str, Dict]],
 
 def collect_existing_fired_ids(pool_path: Path, val_rows: List[Dict[str, Any]],
                                  label_key: str = "true_label") -> Dict[str, set]:
-    """Run every lf_* in the existing pool on val; return {lf_name: set(fired_ids)}."""
+    """{lf_name: set(fired_ids)} for every lf_* in pool when run on val."""
     out: Dict[str, set] = {}
     try:
         for name, fn in load_pool_callables(pool_path):
@@ -259,7 +244,7 @@ def jaccard_dedup_against_pool(
     existing_fired_sets: Dict[str, set],
     max_overlap: float = 0.95,
 ) -> Tuple[List[Tuple[str, str, Dict]], List[Tuple[str, str]]]:
-    """Drop a new annotator if its fired_ids overlap >max_overlap with ANY existing one."""
+    """Drop new annotators whose fired_ids overlap >max_overlap with ANY existing one."""
     kept: List[Tuple[str, str, Dict]] = []
     dropped: List[Tuple[str, str]] = []
     for name, src, m in new_lfs:
@@ -294,7 +279,7 @@ def consistency_filter_train_val(
     label_key: str = "true_label",
     max_train_val_prec_gap: float = 0.30,
 ) -> Tuple[List[Tuple[str, str, Dict]], List[Tuple[str, str]]]:
-    """Drop annotators where val_prec exceeds train_prec by more than the gap (val-overfit)."""
+    """Drop val-overfit annotators (val_prec - train_prec > gap)."""
     kept: List[Tuple[str, str, Dict]] = []
     dropped: List[Tuple[str, str]] = []
     for name, src, m_val in lfs_with_metrics:
@@ -320,13 +305,8 @@ def consistency_filter_train_val(
 # ────────────────────────────────────────────────────────────────────────
 
 def _resolve_python() -> str:
-    """Return the Python executable to use for subprocesses.
-
-    Priority:
-      1. Current interpreter (sys.executable) — if it has sklearn.
-      2. /home/txu223/miniconda3/envs/msg/bin/python — known-good msg conda env.
-      3. Fall back to sys.executable.
-    """
+    """Pick Python executable for subprocesses: current interp if sklearn is
+    importable, else msg conda env, else sys.executable as last resort."""
     try:
         import sklearn  # noqa: F401
         return sys.executable
@@ -378,9 +358,8 @@ def run_eval_subprocess(pool_module: Path, train: Path, val: Path, test: Path,
                           task: str = "chemprot") -> Path:
     """Evaluate pool on train/val/test, dispatching by task_type.
 
-    Speed knob: set env `EVOPOOL_FAST_EVAL=1` to skip the train split during
-    iter-loop eval (orchestrator only needs val per-class F1 for selection
-    + test for trajectory; train labels are produced once at the final iter).
+    Set EVOPOOL_FAST_EVAL=1 to skip the train split during iter-loop eval
+    (train labels are only needed once at the final iter).
     """
     import subprocess as _sp
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -394,7 +373,7 @@ def run_eval_subprocess(pool_module: Path, train: Path, val: Path, test: Path,
     else:
         splits = [str(train), str(val), str(test)]
 
-    script = _EVAL_DIR / ("run_annotators_ml.py" if multilabel else "run_annotators.py")
+    script = _EVAL_DIR / ("run_annotators_multilabel.py" if multilabel else "run_annotators.py")
     cmd = [
         _resolve_python(), str(script),
         "--pool_module", str(pool_module),
@@ -411,10 +390,10 @@ def run_eval_subprocess(pool_module: Path, train: Path, val: Path, test: Path,
 def run_analyze_subprocess(pool_module: Path, train_path: Path, brief_path: Path,
                             task_name: str = "chemprot",
                             label_key: Optional[str] = None,
-                            query_selection_method: str = "submodular",
+                            query_selection_method: str = "batchbald",
                             query_k_min: int = 20, query_k_max: int = 60,
                             class_balance_floor: int = 2, seed: int = 42) -> Path:
-    """Produce improvement_brief.json, dispatching by task_type."""
+    """Run analyzer → improvement_brief.json, dispatching by task_type."""
     import subprocess as _sp
     brief_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -424,7 +403,7 @@ def run_analyze_subprocess(pool_module: Path, train_path: Path, brief_path: Path
         # uses the first true_label for cluster targeting.
         label_key = "true_label"
 
-    script = _EVAL_DIR / ("analyze_errors_ml.py" if multilabel else "analyze_errors.py")
+    script = _EVAL_DIR / ("analyze_errors_multilabel.py" if multilabel else "analyze_errors.py")
     cmd = [
         _resolve_python(), str(script),
         "--task_name", task_name,
@@ -447,12 +426,8 @@ def run_analyze_subprocess(pool_module: Path, train_path: Path, brief_path: Path
 # ────────────────────────────────────────────────────────────────────────
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
-    """Read JSONL, normalizing labels so BOTH `true_label` (int) and
-    `true_labels` (List[int]) are populated when either is present.
-
-    Lets single-label and multi-label code paths read the same row without
-    branching at every call site.
-    """
+    """Read JSONL; populate BOTH `true_label` (int) and `true_labels` (List[int])
+    so single-label and multi-label code share the same row."""
     rows: List[Dict[str, Any]] = []
     for line in open(path, encoding="utf-8"):
         line = line.strip()

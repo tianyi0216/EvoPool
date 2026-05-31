@@ -7,9 +7,8 @@ Standalone (no orchestrator integration required). Produces:
   <out_dir>/iter_00/summary.json
 
 Auto-selects the prompt by task_family:
-  - classification tasks      → LEXICAL_INSTRUCTION (production B1_V1 prompt)
+  - classification tasks      → LEXICAL_INSTRUCTION (lexical prompt)
   - verification/NLI tasks    → VERIFICATION_INSTRUCTION (claim-evidence variant)
-    {fever, vitaminc, scifact, anli}
 """
 from __future__ import annotations
 
@@ -26,22 +25,18 @@ from src.pipeline.common import (
 )
 from src.prompts.lexical import LEXICAL_INSTRUCTION
 from src.prompts.verification import VERIFICATION_INSTRUCTION
-from src.prompts.utils import base_prompt_chemprot
+from src.prompts.utils import base_prompt_classification
 
 
 # Tasks where the lexical prompt's ChemProt-style example biases the LLM away
 # from the right primitive (metadata comparison). For these, use the
 # verification variant which pushes annotators to compose pre-computed
 # comparison features instead of regexing the raw text.
-_VERIFICATION_TASKS = {"fever", "vitaminc", "scifact", "anli"}
+_VERIFICATION_TASKS = {"fever"}
 
 
 def _pick_instruction(task: str) -> str:
-    """Auto-select prompt by task_family.
-
-    Falls back to checking task_family on the task config, then to the
-    hard-coded VERIFICATION_TASKS set for robustness.
-    """
+    """Auto-select prompt by task_family, falling back to the hard-coded set."""
     try:
         cfg = get_task_config(task)
         family = getattr(cfg, "task_family", None)
@@ -64,14 +59,13 @@ def main():
     p.add_argument("--out_dir", type=Path, required=True,
                    help="Output root; iter_00/pool.py is written under it.")
     p.add_argument("--n_calls", type=int, default=18,
-                   help="Number of broad LLM batches (D_v6 production: 18).")
+                   help="Number of broad LLM batches.")
     p.add_argument("--model", default="gpt-4o-mini")
     p.add_argument("--temperature", type=float, default=0.5)
     p.add_argument("--max_output_tokens", type=int, default=2400)
     p.add_argument("--cache_dir", type=Path,
                    default=Path("runs/cache/openai_responses/evopool_gen"))
-    p.add_argument("--min_precision", type=float, default=0.30,
-                   help="D_v6 production floor.")
+    p.add_argument("--min_precision", type=float, default=0.30)
     p.add_argument("--min_fires", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
@@ -85,7 +79,7 @@ def main():
     cfg = get_task_config(args.task)
     seed_text = stratified_seed_text(data["val"], cfg, n_per_class=2, seed=args.seed)
     instruction = _pick_instruction(args.task)
-    base = base_prompt_chemprot(cfg, seed_text, prompt_extra=instruction)
+    base = base_prompt_classification(cfg, seed_text, prompt_extra=instruction)
 
     # Broad batch plan
     batches = [(f"b{i+1}", base + f"\n[batch {i+1}/{args.n_calls}; vary helpers and target classes]")

@@ -39,9 +39,9 @@ def compute_metrics(eval_pred) -> Dict[str, Any]:
 # ── multi-label ───────────────────────────────────────────────────────
 
 
-def compute_ml_metrics(pred_logits: np.ndarray, y_multihot: np.ndarray,
-                       threshold: float = 0.5,
-                       logits_are_probs: bool = True) -> Dict[str, Any]:
+def compute_multilabel_metrics(pred_logits: np.ndarray, y_multihot: np.ndarray,
+                               threshold: float = 0.5,
+                               logits_are_probs: bool = True) -> Dict[str, Any]:
     """Paper-conv multi-label metrics: per-class binary F1, macro/micro/weighted/sample F1.
 
     If ``logits_are_probs`` is False, applies sigmoid before thresholding.
@@ -95,8 +95,8 @@ def compute_ml_metrics(pred_logits: np.ndarray, y_multihot: np.ndarray,
     }
 
 
-def hf_compute_metrics_ml(eval_pred) -> Dict[str, Any]:
+def hf_compute_metrics_multilabel(eval_pred) -> Dict[str, Any]:
     """HuggingFace Trainer-compatible wrapper that applies sigmoid first."""
     logits, labels = eval_pred
-    return compute_ml_metrics(np.asarray(logits), np.asarray(labels),
-                              threshold=0.5, logits_are_probs=False)
+    return compute_multilabel_metrics(np.asarray(logits), np.asarray(labels),
+                                      threshold=0.5, logits_are_probs=False)

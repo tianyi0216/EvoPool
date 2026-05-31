@@ -73,9 +73,9 @@ def votes_to_binary_matrix(votes_list: List[Dict[str, int]],
                             lf_names: List[str],
                             n_classes: int) -> np.ndarray:
     """Convert list of {lf_name: class_idx_or_ABSTAIN} into (N, L, K) tensor
-    of binary indicators where T[i, l, c] = 1 iff LF l fired class c on row i.
+    of binary indicators where T[i, l, c] = 1 iff annotator l fired class c on row i.
 
-    For multi-label aggregation, the standard 'predict c if any LF voted c'
+    For multi-label aggregation, the standard 'predict c if any annotator voted c'
     reduces to T.any(axis=1) → (N, K).
     """
     ABSTAIN = -1
@@ -101,7 +101,7 @@ def votes_to_binary_matrix(votes_list: List[Dict[str, int]],
 
 
 def aggregate_majority_or(T: np.ndarray) -> np.ndarray:
-    """Multi-label MV-OR: predict c iff at least 1 LF voted c.
+    """Multi-label MV-OR: predict c iff at least 1 annotator voted c.
 
     Args:
         T: (N, L, K) binary tensor from votes_to_binary_matrix.
@@ -112,13 +112,13 @@ def aggregate_majority_or(T: np.ndarray) -> np.ndarray:
 
 
 def aggregate_majority_threshold(T: np.ndarray, threshold: int = 1) -> np.ndarray:
-    """Predict c iff >= threshold LFs voted c."""
+    """Predict c iff >= threshold annotators voted c."""
     counts = T.sum(axis=1)  # (N, K)
     return (counts >= threshold).astype(np.int8)
 
 
 def collect_lf_names_from_votes(splits_votes: Dict[str, List[Dict[str, int]]]) -> List[str]:
-    """Union of LF names across all splits, sorted."""
+    """Union of annotator names across all splits, sorted."""
     names = set()
     for vlist in splits_votes.values():
         for v in vlist or []:

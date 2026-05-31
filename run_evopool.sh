@@ -4,6 +4,7 @@
 set -e
 CONFIG=${1:-config.yaml}
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 echo "[1/2] Running EvoPool pipeline..."
 python -m src.pipeline.run --config "$CONFIG"
 echo "[2/2] Running aggregator..."

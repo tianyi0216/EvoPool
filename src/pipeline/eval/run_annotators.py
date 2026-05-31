@@ -77,7 +77,7 @@ def get_annotators(mod: Any) -> List[Tuple[str, Callable]]:
 
 
 # ---------------------------------------------------------------------------
-# Execute LFs
+# Execute annotators
 # ---------------------------------------------------------------------------
 
 
@@ -163,7 +163,7 @@ def aggregate_weighted_vote(
 
 
 def aggregate_at_least_one(votes: List[int], target_label: int = 1) -> int:
-    """If any LF votes target_label, return it; else abstain."""
+    """If any annotator votes target_label, return it; else abstain."""
     for v in votes:
         if v == target_label:
             return target_label
@@ -177,7 +177,7 @@ AGGREGATORS: Dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Per-LF metrics on a given split
+# Per-annotator metrics on a given split
 # ---------------------------------------------------------------------------
 
 
@@ -396,7 +396,7 @@ def process_split(
 
     vote_matrix = run_pool(annotators, examples)
 
-    # Per-LF metrics
+    # Per-annotator metrics
     lf_metrics: List[Dict[str, Any]] = []
     for j, (name, _) in enumerate(annotators):
         m = compute_lf_metrics(name, vote_matrix[j], examples, label_key)
@@ -466,7 +466,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--pool_module",
         type=Path,
-        default=Path("annotators/youtube_spam/initial_pool.py"),
+        default=Path("annotators/chemprot/initial_pool.py"),
         help="Path to the annotator pool Python module.",
     )
     p.add_argument(
@@ -474,9 +474,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         nargs="+",
         default=[
-            Path("data/processed/youtube_spam_collection/train.jsonl"),
-            Path("data/processed/youtube_spam_collection/val.jsonl"),
-            Path("data/processed/youtube_spam_collection/test.jsonl"),
+            Path("data/processed/chemprot/train.jsonl"),
+            Path("data/processed/chemprot/val.jsonl"),
+            Path("data/processed/chemprot/test.jsonl"),
         ],
         help="Paths to JSONL split files.",
     )
@@ -489,7 +489,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--out_dir",
         type=Path,
-        default=Path("runs/youtube_spam/initial"),
+        default=Path("runs/chemprot/initial"),
         help="Output directory for labeled data and reports.",
     )
     return p

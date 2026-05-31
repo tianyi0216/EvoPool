@@ -241,9 +241,9 @@ def main():
 
     target_modules = [x.strip() for x in args.target_modules.split(",") if x.strip()]
 
-    # ── WS pass ──
+    # ── noisy-label pass ──
     if args.mode in ("ws", "both"):
-        print(f"\n{'='*64}\n  WS pass on {len(covered)} noisy-labeled examples\n{'='*64}")
+        print(f"\n{'='*64}\n  noisy-label pass on {len(covered)} noisy-labeled examples\n{'='*64}")
         model, tok = make_lora_model(args.model_name, args.num_labels,
                                      r=args.lora_r, alpha=args.lora_alpha,
                                      dropout=args.lora_dropout,
@@ -264,7 +264,7 @@ def main():
                                  "lr": args.ws_lr, "epochs": args.ws_epochs,
                                  "lora_r": args.lora_r}}
         (args.out_dir / "ws" / "results.json").write_text(json.dumps(ws_results, indent=2))
-        print(f"\n[WS] val_macF1={val_m.get('f1_macro'):.4f} "
+        print(f"\n[NOISY] val_macF1={val_m.get('f1_macro'):.4f} "
               f"test_macF1={test_m.get('f1_macro'):.4f}")
         del model, tok
         torch.cuda.empty_cache()
@@ -284,7 +284,7 @@ def main():
                                          r=args.lora_r, alpha=args.lora_alpha,
                                          dropout=args.lora_dropout,
                                          target_modules=target_modules)
-            print(f"  [phase A] WS on {len(covered)} noisy examples")
+            print(f"  [phase A] noisy-label on {len(covered)} noisy examples")
             train_eval(model, tok, covered, val_rows, test_rows,
                        out_dir=cell_dir / "phaseA_ws",
                        num_labels=args.num_labels,

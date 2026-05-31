@@ -1,7 +1,6 @@
 """EvoPool: Claim-verification Generator prompt for NLI-style tasks.
 
-Used by the pipeline when ``task_family == 'verification'``
-(FEVER, SciFact, VitaminC, ANLI).
+Used by the pipeline when ``task_family == 'verification'`` (e.g. FEVER).
 
 Difference from ``lexical.py``: claim verification is a CLAIM-vs-EVIDENCE
 COMPARISON, not a single-text lexical pattern match. The pre-computed

@@ -5,10 +5,9 @@ trains a LogisticRegressionCV on the val split (ground truth). Honest 5-fold
 StratifiedKFold OOF predictions are used for the val split itself to avoid
 in-sample inflation; train/test get predictions from a model fit on the full val.
 
-This is the EvoPool paper headline aggregator (a.k.a. A1 / A1_textaware). Pseudo-
-labels are written into ``aggregated_labels.majority_vote`` (overwriting the raw
-MV) so any downstream trainer that already consumes that field uses EvoAgg labels
-without modification.
+This is the paper headline aggregator (A1 in the ablation table). Pseudo-labels
+are written into ``aggregated_labels.majority_vote`` (overwriting the raw MV) so
+any downstream trainer that consumes that field uses EvoAgg labels unchanged.
 
 Multi-label tasks (``multi_label=True``) train one binary LR per class with the
 same text+votes featurization; the dumped row carries

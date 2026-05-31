@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
-"""EvoPool: parse Kaggle PubMed 14-class multi-label zip to pipeline JSONL.
+"""Parse the Kaggle PubMed 14-class multi-label zip to pipeline JSONL.
 
-Source : user-supplied Kaggle "PubMed Multi Label Text Classification" zip.
-Task   : 14-class multi-label MeSH category classification (multi_label).
-
-The Kaggle CSV typically has columns:
-    Title, abstractText, meshMajor, A, B, C, D, E, F, G, H, I, J, K, L, M, N, Z, ...
-where each capital-letter column is a binary 0/1 indicator for a MeSH category.
-
-We auto-detect:
-    1. The largest CSV inside the zip
-    2. The text column ('abstractText' / 'text' / 'Title' / Title+abstract concat)
-    3. Binary 0/1 label columns
-
-Output: <out_dir>/{train,val,test}.jsonl with multi-label schema:
-    {id, text, true_labels: List[int], true_label_names: List[str], metadata}
-plus label_map.json and dataset.json.
+Source: user-supplied Kaggle "PubMed Multi Label Text Classification" zip.
+Auto-detects the largest CSV, the text column, and binary 0/1 label columns
+(each capital-letter MeSH category).
 """
 
 from __future__ import annotations
@@ -49,7 +37,6 @@ def prepare_pubmed(
     seed: int = 42,
     val_budget: int = 500,
 ) -> None:
-    """Parse the Kaggle PubMed multilabel zip into EvoPool JSONL splits."""
     import pandas as pd
 
     zip_p = Path(zip_path)
@@ -76,7 +63,6 @@ def prepare_pubmed(
 
     print(f"[prepare_pubmed] loaded df shape={df.shape}", flush=True)
 
-    # ----- text column -----
     text_candidates = [
         "abstractText", "abstract", "abstract_text", "text",
         "Abstract", "Text",
@@ -90,7 +76,6 @@ def prepare_pubmed(
             raise RuntimeError(f"Could not find text column; df columns: {list(df.columns)}")
     print(f"[prepare_pubmed] text column: {text_col}", flush=True)
 
-    # ----- label columns (binary 0/1 indicators) -----
     skip_cols = {
         text_col, "Title", "abstractText", "abstract", "id", "ID",
         "meshMajor", "meshMinor", "PMID", "pmid",
@@ -107,7 +92,6 @@ def prepare_pubmed(
     label_map = {i: name for i, name in enumerate(label_cols)}
     write_label_map(out / "label_map.json", label_map)
 
-    # ----- build rows -----
     all_rows = []
     for idx, row in df.iterrows():
         text = str(row[text_col]) if pd.notna(row[text_col]) else ""

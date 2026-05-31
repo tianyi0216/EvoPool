@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """EvoPool: Reflector agent — Reflexion-inspired memory consolidator (OPTIONAL).
 
-OFF by default (memory_level=0 / L0 production is purely Darwinian and beats
-the Reflector-enabled R1 variant on the paper's headline aggregator A1).
-Shipped for memory ablations only.
+OFF by default (memory_level=0 production is purely Darwinian and beats the
+Reflector-enabled variant on the headline aggregator). Shipped for memory
+ablations only.
 
 Reads:
   --raw_events_path   memory/raw_events.jsonl (append-only buffer of dropped

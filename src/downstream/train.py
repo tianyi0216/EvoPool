@@ -1,10 +1,10 @@
 """EvoPool: downstream training dispatcher.
 
 Reads config.yaml and dispatches to one of the four concrete trainers:
-- src.downstream.train_encoder       (RoBERTa-large full FT, single-label)
-- src.downstream.train_encoder_ml    (RoBERTa-large full FT, multi-label BCE)
-- src.downstream.train_decoder_lora    (Qwen / Llama LoRA, single-label)
-- src.downstream.train_decoder_lora_ml (Qwen / Llama LoRA, multi-label BCE)
+- src.downstream.train_encoder              (RoBERTa-large full FT, single-label)
+- src.downstream.train_encoder_multilabel   (RoBERTa-large full FT, multi-label BCE)
+- src.downstream.train_decoder_lora         (Qwen / Llama LoRA, single-label)
+- src.downstream.train_decoder_lora_multilabel (Qwen / Llama LoRA, multi-label BCE)
 
 The choice depends on:
 - config.downstream.model: roberta | qwen | llama
@@ -42,15 +42,15 @@ def main() -> None:
 
     if model == "roberta":
         if multi_label:
-            from src.downstream.train_encoder_ml import main as trainer_main
-            label = "train_encoder_ml"
+            from src.downstream.train_encoder_multilabel import main as trainer_main
+            label = "train_encoder_multilabel"
         else:
             from src.downstream.train_encoder import main as trainer_main
             label = "train_encoder"
     elif model in {"qwen", "llama"}:
         if multi_label:
-            from src.downstream.train_decoder_lora_ml import main as trainer_main
-            label = "train_decoder_lora_ml"
+            from src.downstream.train_decoder_lora_multilabel import main as trainer_main
+            label = "train_decoder_lora_multilabel"
         else:
             from src.downstream.train_decoder_lora import main as trainer_main
             label = "train_decoder_lora"
@@ -65,8 +65,17 @@ def main() -> None:
 
 
 def _build_trainer_args(cfg: Dict[str, Any], model: str, multi_label: bool) -> List[str]:
-    """Translate config.yaml -> the chosen trainer's CLI args."""
+    """Translate config.yaml -> the chosen trainer's CLI args.
+
+    Each trainer has a different CLI surface so we branch:
+    - train_encoder (roberta + single-label) uses verbose names
+      (--num_epochs / --learning_rate / --hard_label_path / --cft).
+    - All other trainers (encoder_multilabel + decoder_lora[_multilabel])
+      use --ws_epochs / --ws_lr / --grad_accum and read pseudo-labels
+      directly from --run_root/iter_*/eval/train_labeled.jsonl.
+    """
     cli: List[str] = []
+    use_encoder_singlelabel = (model == "roberta" and not multi_label)
 
     processed_dir = Path(get(cfg, "dataset.processed_dir") or f"data/processed/{get(cfg, 'dataset.name')}")
     cli += ["--train_path", str(processed_dir / "train.jsonl")]
@@ -84,31 +93,44 @@ def _build_trainer_args(cfg: Dict[str, Any], model: str, multi_label: bool) -> L
     )
     cli += ["--out_dir", str(out_dir)]
 
-    hard_label_path = get(cfg, "downstream.hard_label_path") or get(cfg, "aggregator.dump_dir")
-    if hard_label_path:
-        cli += ["--hard_label_path", str(hard_label_path)]
-
     model_name = get(cfg, "downstream.model_name")
     if model_name:
         cli += ["--model_name", str(model_name)]
 
-    # Weak-supervision phase hyperparams
-    ws = get(cfg, "downstream.ws", {}) or {}
-    _add_if_set(cli, "--num_epochs", ws.get("epochs"))
-    _add_if_set(cli, "--batch_size", ws.get("batch_size"))
-    _add_if_set(cli, "--learning_rate", ws.get("lr"))
-    _add_if_set(cli, "--max_length", ws.get("max_length"))
-    _add_if_set(cli, "--weight_decay", ws.get("weight_decay"))
-    _add_if_set(cli, "--warmup_ratio", ws.get("warmup_ratio"))
+    if multi_label:
+        n_classes = get(cfg, "dataset.n_classes")
+        if n_classes is not None:
+            cli += ["--num_labels", str(n_classes)]
 
+    # Pseudo-label phase hyperparams (encoder vs all-others have different flag names)
+    ws = get(cfg, "downstream.ws", {}) or {}
+    if use_encoder_singlelabel:
+        _add_if_set(cli, "--num_epochs", ws.get("epochs"))
+        _add_if_set(cli, "--learning_rate", ws.get("lr"))
+        hard_label_path = get(cfg, "downstream.hard_label_path") or get(cfg, "aggregator.dump_dir")
+        if hard_label_path:
+            cli += ["--hard_label_path", str(hard_label_path)]
+    else:
+        _add_if_set(cli, "--ws_epochs", ws.get("epochs"))
+        _add_if_set(cli, "--ws_lr", ws.get("lr"))
+
+    _add_if_set(cli, "--batch_size", ws.get("batch_size"))
+    _add_if_set(cli, "--max_length", ws.get("max_length"))
     _add_if_set(cli, "--seed", get(cfg, "downstream.seed", 42))
 
-    # CFT (continued fine-tuning on clean validation)
+    # CFT
     cft = get(cfg, "downstream.cft", {}) or {}
     if cft.get("enabled"):
-        cli += ["--cft"]
-        _add_if_set(cli, "--cft_epochs", cft.get("epochs"))
-        _add_if_set(cli, "--cft_learning_rate", cft.get("lr"))
+        if use_encoder_singlelabel:
+            cli += ["--cft"]
+            _add_if_set(cli, "--cft_epochs", cft.get("epochs"))
+            _add_if_set(cli, "--cft_learning_rate", cft.get("lr"))
+        else:
+            _add_if_set(cli, "--cft_epochs", cft.get("epochs"))
+            _add_if_set(cli, "--cft_lr", cft.get("lr"))
+            clean_sizes = cft.get("clean_sizes")
+            if clean_sizes:
+                cli += ["--clean_sizes", ",".join(str(x) for x in clean_sizes)]
 
     # LoRA (decoder models only)
     if model in {"qwen", "llama"}:
@@ -118,7 +140,7 @@ def _build_trainer_args(cfg: Dict[str, Any], model: str, multi_label: bool) -> L
         _add_if_set(cli, "--lora_dropout", lora.get("dropout"))
         if "batch_size" in lora:
             cli += ["--batch_size", str(lora["batch_size"])]
-        _add_if_set(cli, "--grad_accum_steps", lora.get("grad_accum"))
+        _add_if_set(cli, "--grad_accum", lora.get("grad_accum"))
 
     return cli
 

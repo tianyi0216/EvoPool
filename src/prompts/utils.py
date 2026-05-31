@@ -244,11 +244,11 @@ def base_prompt_classification(task_cfg, seed_examples_text: str, prompt_extra: 
         for c, txt in task_cfg.class_guardrails.items()
     )
     return (
-        f"You are an expert at writing executable Python labeling functions for "
+        f"You are an expert at writing executable Python annotators for "
         f"{task_cfg.task_description}\n\n"
         f"Class options:\n{label_lines}\n\n"
         f"Per-class guidance:\n{guardrails}\n\n"
-        f"Each labeling function takes a dict ex with fields:\n"
+        f"Each annotator takes a dict ex with fields:\n"
         f"{task_cfg.metadata_fields_description}\n\n"
         f"Return ABSTAIN (= -1) when the function should not predict.\n"
         f"Return an integer class label otherwise.\n\n"

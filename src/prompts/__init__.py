@@ -4,9 +4,9 @@ Production Generator prompts are auto-selected by the orchestrator from
 ``task_config.task_family``:
 
 - ``classification`` -> ``LEXICAL_INSTRUCTION`` (lexical, no-CoT). Used for
-  ChemProt, AG News, Banking77, DDI, PubMed (multi-label), Claude9, etc.
+  ChemProt and PubMed (multi-label).
 - ``verification``   -> ``VERIFICATION_INSTRUCTION`` (metadata-comparison).
-  Used for FEVER, SciFact, VitaminC, ANLI.
+  Used for FEVER.
 
 Helpers (``call_llm``, ``parse_lfs_from_response``,
 ``build_callable_permissive``, ``filter_by_precision``, ``write_pool_py``,

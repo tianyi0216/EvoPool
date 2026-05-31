@@ -4,4 +4,5 @@
 set -e
 CONFIG=${1:-config.yaml}
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 python -m src.downstream.train --config "$CONFIG"

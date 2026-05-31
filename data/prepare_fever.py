@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""EvoPool: download/convert FEVER (gold evidence) to pipeline JSONL.
+"""Download/convert FEVER (gold evidence) to pipeline JSONL.
 
-Source : copenlu/fever_gold_evidence on HuggingFace
-Task   : 3-class fact verification (SUPPORTS / REFUTES / NOT ENOUGH INFO)
-
-Each example becomes:
-    text = "Claim: {claim}\\nEvidence: {evidence}"
-    metadata.claim    = original claim
-    metadata.evidence = concatenated gold evidence sentences
-
-Default subsample (matching paper): 10000 train / 1000 val (or val_budget) / 7600 test.
+Source: copenlu/fever_gold_evidence (HuggingFace).
+Task  : 3-class fact verification (SUPPORTS / REFUTES / NOT ENOUGH INFO).
+Default subsample (paper): 10000 train / 1000 val / 7600 test (seed 42).
 """
 
 from __future__ import annotations
@@ -42,7 +36,7 @@ def normalize_text(text: str) -> str:
 
 
 def flatten_evidence(evidence_list):
-    """Flatten FEVER gold evidence: list of [page, sent_id, text] tuples -> str."""
+    # FEVER gold evidence is a list of [page, sent_id, text] tuples.
     sentences = []
     for ev in evidence_list:
         if isinstance(ev, list) and len(ev) >= 3:
@@ -53,7 +47,6 @@ def flatten_evidence(evidence_list):
 
 
 def _stratified_subsample(data, max_n: int, rng: random.Random):
-    """Stratified-by-label subsample to max_n rows, then fill remainder."""
     if not max_n or len(data) <= max_n:
         rng.shuffle(data)
         return data
@@ -83,7 +76,6 @@ def prepare_fever(
     max_test: int = 7600,
     seed: int = 42,
 ) -> None:
-    """Download FEVER (gold evidence) and produce {train,val,test}.jsonl + label/info."""
     from datasets import load_dataset
 
     out = Path(out_dir)

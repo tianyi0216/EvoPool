@@ -1,32 +1,19 @@
 #!/usr/bin/env python3
-"""EvoPool: optional 5-feature enrichment for FEVER metadata.
+"""Optional 5-feature enrichment for FEVER metadata.
 
-Augments the per-row metadata dict produced by ``prepare_fever.py`` with extra
-fields that annotators can reference (via ``.get(key, default)``). The enriched
-JSONL is a STRICT SUPERSET of the base JSONL -- existing keys are never modified.
+Enriched JSONL is a STRICT SUPERSET of the base JSONL produced by
+prepare_fever.py -- existing keys are never modified. Dependencies are loaded
+lazily per feature, so a subset can be enabled without the full ML stack.
 
-Usage:
-    python -m data.enrich_fever \\
-        --input_dir  data/processed/fever \\
-        --output_dir data/processed/fever_enriched \\
-        --features   A,B,C,D,E
-
-Features (any combination; commas):
-    A  semantic : sentence-transformers cosine similarity (claim vs evidence).
-                  Adds meta['sim_semantic'] (float) + meta['sim_semantic_bin'] (str).
-                  Falls back to TF-IDF cosine if sentence-transformers/torch missing.
-    B  nli      : pretrained NLI (DeBERTa-v3-base-mnli-fever-anli) entail/neutral/contradict.
-                  Adds meta['nli_entail'], meta['nli_neutral'], meta['nli_contradict'].
-    C  deppar   : spaCy dependency parse -> claim SVO + SVO-in-evidence booleans.
-                  Adds meta['claim_subj/verb/obj'] + meta['{subj,verb,obj}_in_evidence'].
-    D  antonym  : WordNet-based claim<->evidence antonym pair count.
-                  Adds meta['antonym_score_ext'] (int).
-    E  phrases  : extended refutes/supports/NEI phrase-bank counts.
-                  Adds meta['refutes_phrase_count'], meta['supports_phrase_count'],
-                  meta['nei_phrase_count'].
-
-Dependencies are loaded lazily per feature so a subset can be enabled without
-pulling in the full ML stack.
+Features (paper-public codes; any subset, comma-separated):
+    A semantic  -> meta['sim_semantic' / 'sim_semantic_bin']
+                   sentence-transformers cosine (TF-IDF fallback).
+    B nli       -> meta['nli_entail' / 'nli_neutral' / 'nli_contradict']
+                   DeBERTa-v3-base-mnli-fever-anli.
+    C deppar    -> meta['claim_{subj,verb,obj}'] + '{subj,verb,obj}_in_evidence'
+                   spaCy en_core_web_sm.
+    D antonym   -> meta['antonym_score_ext']  (WordNet antonym pair count).
+    E phrases   -> meta['{refutes,supports,nei}_phrase_count'].
 """
 
 from __future__ import annotations
@@ -60,9 +47,7 @@ def save_split(path: Path, examples: List[Dict[str, Any]]) -> None:
             f.write(json.dumps(ex) + "\n")
 
 
-# ---------------------------------------------------------------------------
 # Feature A: semantic similarity (sentence-transformers; TF-IDF fallback)
-# ---------------------------------------------------------------------------
 def _bin_from_quartiles(vals, sims):
     import numpy as np
     q = np.percentile(vals, [25, 50, 75])
@@ -128,9 +113,7 @@ def add_semantic(examples, model_name: str = "sentence-transformers/all-MiniLM-L
     return examples
 
 
-# ---------------------------------------------------------------------------
 # Feature B: NLI entail / neutral / contradict
-# ---------------------------------------------------------------------------
 def add_nli(examples, model_name: str = "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli"):
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -178,9 +161,7 @@ def add_nli(examples, model_name: str = "MoritzLaurer/DeBERTa-v3-base-mnli-fever
     return examples
 
 
-# ---------------------------------------------------------------------------
 # Feature C: dependency-parse SVO + overlap
-# ---------------------------------------------------------------------------
 def add_deppar(examples):
     import spacy
     try:
@@ -217,9 +198,7 @@ def add_deppar(examples):
     return examples
 
 
-# ---------------------------------------------------------------------------
 # Feature D: WordNet-based antonym count
-# ---------------------------------------------------------------------------
 def add_antonym(examples):
     import nltk
     try:
@@ -258,9 +237,7 @@ def add_antonym(examples):
     return examples
 
 
-# ---------------------------------------------------------------------------
 # Feature E: extended phrase-bank counts
-# ---------------------------------------------------------------------------
 REFUTES_PHRASES = [
     "not ", "no ", "never", "none", "cannot", "wasn't", "isn't", "weren't",
     "don't", "doesn't", "didn't", "was not", "is not", "were not", "does not",
@@ -295,9 +272,6 @@ def add_phrases(examples):
     return examples
 
 
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
 FEATURE_FNS = {
     "A": add_semantic,
     "B": add_nli,
@@ -313,7 +287,6 @@ def enrich_fever(
     features: str = "A,B,C,D,E",
     splits: str = "train.jsonl,val.jsonl,test.jsonl",
 ) -> None:
-    """Apply the requested feature set to each split and write to output_dir."""
     feats = [f.strip().upper() for f in features.split(",") if f.strip()]
     for f in feats:
         if f not in FEATURE_FNS:
@@ -343,7 +316,7 @@ def enrich_fever(
         save_split(out / sp, examples)
         print(f"  wrote {out/sp}", flush=True)
 
-    # Copy non-jsonl side files so the enriched dir is a drop-in replacement
+    # Mirror side files so the enriched dir is a drop-in replacement.
     for side in ["dataset.json", "label_map.json"]:
         src = inp / side
         if src.exists():

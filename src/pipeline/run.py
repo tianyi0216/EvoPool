@@ -1,11 +1,7 @@
-"""EvoPool: pipeline runner. Reads config.yaml and invokes the orchestrator
-with translated CLI arguments.
+"""EvoPool: pipeline runner. Reads config.yaml and invokes the orchestrator.
 
 Usage:
     python -m src.pipeline.run --config config.yaml
-
-The dispatcher exists so the legacy ~50-flag orchestrator stays untouched while
-end users only need a single YAML.
 """
 from __future__ import annotations
 
@@ -64,14 +60,14 @@ def _build_orchestrator_args(cfg: Dict[str, Any]) -> List[str]:
     _add_if_set(cli, "--imp_max_jaccard_overlap", get(cfg, "pipeline.improver.max_jaccard_overlap"))
     _add_if_set(cli, "--imp_max_train_val_prec_gap", get(cfg, "pipeline.improver.max_train_val_prec_gap"))
 
-    # C1_v2 per-class budget Improver (D_v6 production default = True)
+    # Per-class Improver budget (production default = True)
     if get(cfg, "pipeline.improver.per_class_budget", True):
-        cli += ["--c1v2_per_class_improver"]
+        cli += ["--enable_per_class_improver"]
     else:
-        cli += ["--disable_c1v2"]
-    _add_if_set(cli, "--c1v2_f1_threshold", get(cfg, "pipeline.improver.f1_threshold"))
-    _add_if_set(cli, "--c1v2_max_targets", get(cfg, "pipeline.improver.max_targets"))
-    _add_if_set(cli, "--c1v2_n_pos_examples", get(cfg, "pipeline.improver.n_pos_examples"))
+        cli += ["--disable_per_class_improver"]
+    _add_if_set(cli, "--per_class_f1_threshold", get(cfg, "pipeline.improver.f1_threshold"))
+    _add_if_set(cli, "--per_class_max_targets", get(cfg, "pipeline.improver.max_targets"))
+    _add_if_set(cli, "--per_class_n_pos_examples", get(cfg, "pipeline.improver.n_pos_examples"))
 
     # Refiner
     _add_if_set(cli, "--ref_filter_min_precision", get(cfg, "pipeline.refiner.filter_min_precision"))
@@ -86,11 +82,11 @@ def _build_orchestrator_args(cfg: Dict[str, Any]) -> List[str]:
     _add_if_set(cli, "--ablation_drop_threshold", get(cfg, "pipeline.ablation.drop_threshold"))
     _add_if_set(cli, "--min_iter_gain", get(cfg, "pipeline.ablation.min_iter_gain"))
 
-    # Pruning (C3 + dropout)
-    if get(cfg, "pipeline.pruning.c3_pool_pruning", True):
-        cli += ["--c3_pool_pruning"]
+    # Pruning (subsumption + dropout)
+    if get(cfg, "pipeline.pruning.subsumption_pruning", True):
+        cli += ["--enable_subsumption_pruning"]
     else:
-        cli += ["--disable_c3_pool_pruning"]
+        cli += ["--disable_subsumption_pruning"]
     _add_if_set(cli, "--class_dropout_after", get(cfg, "pipeline.pruning.class_dropout_after"))
     _add_if_set(cli, "--do_no_harm_tolerance", get(cfg, "pipeline.pruning.do_no_harm_tolerance"))
 

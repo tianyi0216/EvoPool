@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """EvoPool: Orchestrator — runs Generator → loop(analyze + Improver + Refiner + eval).
 
-Production defaults = D_v6 / L0 (Darwinian, no memory):
-  - gpt-4o-mini, temperature=0.5, n_iters=12, seed=42
-  - Generator: 18 calls/iter, min_prec=0.30, min_fires=5
-  - Improver:  6 calls/iter, min_prec=0.25, min_fires=5 (C1_v2 per-class budget)
-  - Refiner:   min_prec=0.55, ref_min_iter=3, max_jaccard=0.95
-  - Post-iter ablation ON, drop_threshold=0.001
-  - C3 pool prune ON (jaccard >= 0.95, prec_gain >= 0.05)
-  - Memory_level=0 (Reflector OFF)
+Production defaults: gpt-4o-mini, T=0.5, n_iters=12, seed=42. See config.yaml
+for full hyperparameters.
 
 Auto-dispatches single-label vs multi-label via task_type field on the task
 config (src.tasks.configs.get_task_config(task).task_type).
@@ -47,10 +41,7 @@ from src.pipeline.common import (
 
 
 def _macro_full(per_lf_votes_train: list, true_train: list, n_classes: int) -> float:
-    """Compute weighted-vote macro_full F1 from a list of per-annotator votes.
-
-    Used by post-iter ablation to score each candidate-removal subset cheaply.
-    """
+    """Weighted-vote macro_full F1 for a candidate-removal subset (used by post-iter ablation)."""
     import numpy as _np
     if not per_lf_votes_train:
         return 0.0
@@ -84,12 +75,10 @@ def _macro_full(per_lf_votes_train: list, true_train: list, n_classes: int) -> f
 def post_iter_ablation(parent_pool_path: Path, fragment_lf_names: list,
                         merged_pool_path: Path, val_path: Path, label_key: str,
                         n_classes: int, drop_threshold: float = 0.001) -> list:
-    """Greedily drop newly-added annotators that hurt val macro (MV-scored).
+    """Greedily drop new annotators that hurt val macro (MV-scored).
 
-    Returns the SUBSET of fragment_lf_names that should be KEPT (the rest were
-    dropped because removing them improved val macro by >= drop_threshold).
-    Deterministic local search that lets the Improver/Refiner propose more
-    candidates without polluting the pool with bad ones.
+    Returns the subset of fragment_lf_names to KEEP. Deterministic local search
+    that lets Improver/Refiner propose freely without polluting the pool.
     """
     if not fragment_lf_names:
         return []
@@ -150,10 +139,7 @@ def post_iter_ablation(parent_pool_path: Path, fragment_lf_names: list,
 
 def merge_blocks_into_pool(parent_pool: Path, fragments: list, out_pool: Path,
                             comment: str = ""):
-    """Concatenate parent pool source + fragment sources into a single pool.py.
-
-    Builds a unified ANNOTATORS list = parent ANNOTATORS + fragment lf_* names.
-    """
+    """Concat parent pool + fragments; emit unified ANNOTATORS list."""
     parent_src = parent_pool.read_text(encoding="utf-8")
     parent_tree = ast.parse(parent_src)
     parent_lfs = [n.name for n in parent_tree.body
@@ -199,7 +185,11 @@ def merge_blocks_into_pool(parent_pool: Path, fragments: list, out_pool: Path,
 
 
 def _purge_names_from_pool(pool_path: Path, drop_set: set):
-    """Strip dropped lf_* definitions + clean every list literal referencing them."""
+    """Strip dropped lf_* defs + clean every list literal referencing them.
+
+    AST cleanup ensures the rewritten pool.py imports without NameError even
+    when ANNOTATORS or per-class bundle lists referenced the dropped names.
+    """
     if not drop_set:
         return
     src = pool_path.read_text()
@@ -244,13 +234,15 @@ def _purge_names_from_pool(pool_path: Path, drop_set: set):
     pool_path.write_text(new_src)
 
 
-def _c3_prune(final_pool: Path, val_rows: List[Dict], label_key: str,
+def _subsumption_prune(final_pool: Path, val_rows: List[Dict], label_key: str,
                new_lf_names: set,
                subsume_jaccard: float = 0.95,
                subsume_prec_gain: float = 0.05) -> int:
-    """C3 pool pruning: delete existing annotators that are subsumed (jaccard
-    >= subsume_jaccard) by new annotators with at least subsume_prec_gain
-    higher precision. Returns the number of annotators pruned.
+    """Delete existing annotators that are subsumed by new arrivals.
+
+    An old annotator is dropped when a new one fires on (almost) the same
+    val examples (jaccard >= subsume_jaccard) at meaningfully higher
+    precision (>= subsume_prec_gain). Returns the count of pruned annotators.
     """
     callables = load_pool_callables(final_pool)
     fired = {}
@@ -297,13 +289,13 @@ def _c3_prune(final_pool: Path, val_rows: List[Dict], label_key: str,
             if (jac >= subsume_jaccard or cov_of_old >= 0.95) \
                and precs[nn] >= precs[on] + subsume_prec_gain:
                 to_delete.add(on)
-                print(f"  [C3] {nn} (prec={precs[nn]:.3f}) subsumes "
+                print(f"  [PRUNE] {nn} (prec={precs[nn]:.3f}) subsumes "
                       f"{on} (prec={precs[on]:.3f}); jac={jac:.2f} cov_old={cov_of_old:.2f}")
     if to_delete:
         _purge_names_from_pool(final_pool, to_delete)
-        print(f"  [C3] pruned {len(to_delete)} subsumed annotators from pool")
+        print(f"  [PRUNE] pruned {len(to_delete)} subsumed annotators from pool")
     else:
-        print(f"  [C3] no annotators subsumed this iter")
+        print(f"  [PRUNE] no annotators subsumed this iter")
     return len(to_delete)
 
 
@@ -311,25 +303,24 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--task", default="chemprot")
     p.add_argument("--out_root", type=Path, required=True)
-    p.add_argument("--n_iters", type=int, default=12,
-                   help="D_v6 production: 12.")
+    p.add_argument("--n_iters", type=int, default=12)
     p.add_argument("--model", default="gpt-4o-mini")
     p.add_argument("--temperature", type=float, default=0.5)
     p.add_argument("--seed", type=int, default=42)
 
-    # Generator hyperparams (D_v6 production)
+    # Generator
     p.add_argument("--gen_n_calls", type=int, default=18)
     p.add_argument("--gen_min_precision", type=float, default=0.30)
     p.add_argument("--gen_min_fires", type=int, default=5)
 
-    # Improver hyperparams (D_v6 production)
+    # Improver
     p.add_argument("--imp_n_calls", type=int, default=6)
     p.add_argument("--imp_min_precision", type=float, default=0.25)
     p.add_argument("--imp_min_fires", type=int, default=5)
     p.add_argument("--imp_max_jaccard_overlap", type=float, default=0.95)
     p.add_argument("--imp_max_train_val_prec_gap", type=float, default=0.30)
 
-    # Refiner hyperparams (D_v6 production)
+    # Refiner
     p.add_argument("--ref_max_lfs", type=int, default=6)
     p.add_argument("--ref_min_prec_to_refine", type=float, default=0.55)
     p.add_argument("--ref_max_cov_to_refine", type=float, default=0.08)
@@ -337,53 +328,53 @@ def main():
     p.add_argument("--ref_filter_min_fires", type=int, default=5)
     p.add_argument("--ref_max_jaccard_overlap", type=float, default=0.95)
     p.add_argument("--ref_min_iter", type=int, default=3,
-                   help="D_v6: skip Refiner for iter_k where k < ref_min_iter "
-                        "(no Refiner dilution at small pool sizes).")
+                   help="Skip Refiner for iter_k where k < ref_min_iter "
+                        "(avoids dilution at small pool sizes).")
 
     # Pipeline-level
     p.add_argument("--n_classes", type=int, default=None,
-                   help="Total class count; defaults to task_config.n_classes.")
+                   help="Defaults to task_config.n_classes.")
     p.add_argument("--class_dropout_after", type=int, default=99,
-                   help="Blacklist classes that fail K consecutive iters "
-                        "(D_v6 default: effectively disabled).")
+                   help="Blacklist classes that fail K consecutive iters.")
     p.add_argument("--do_no_harm_tolerance", type=float, default=0.020,
                    help="Revert iter if test macro drops by more than this.")
     p.add_argument("--min_iter_gain", type=float, default=0.0,
-                   help="0 = current behavior (only revert on regression).")
+                   help="0 = only revert on regression.")
 
-    # Post-iter ablation (D_v6 production: ON)
+    # Post-iter ablation
     p.add_argument("--enable_post_iter_ablation", action="store_true", default=True)
     p.add_argument("--disable_post_iter_ablation", dest="enable_post_iter_ablation",
                    action="store_false")
     p.add_argument("--ablation_drop_threshold", type=float, default=0.001)
 
-    # C3 pool pruning (D_v6 production: ON)
-    p.add_argument("--c3_pool_pruning", action="store_true", default=True)
-    p.add_argument("--disable_c3_pool_pruning", dest="c3_pool_pruning",
+    # Subsumption pruning
+    p.add_argument("--enable_subsumption_pruning", action="store_true", default=True)
+    p.add_argument("--disable_subsumption_pruning", dest="enable_subsumption_pruning",
                    action="store_false")
-    p.add_argument("--c3_subsume_jaccard", type=float, default=0.95)
-    p.add_argument("--c3_subsume_prec_gain", type=float, default=0.05)
+    p.add_argument("--subsumption_jaccard", type=float, default=0.95)
+    p.add_argument("--subsumption_prec_gain", type=float, default=0.05)
 
-    # C1_v2 (per-class Improver budget; D_v6 production: ON)
-    p.add_argument("--c1v2_per_class_improver", action="store_true", default=True)
-    p.add_argument("--disable_c1v2", dest="c1v2_per_class_improver",
+    # Per-class Improver budget
+    p.add_argument("--enable_per_class_improver", action="store_true", default=True)
+    p.add_argument("--disable_per_class_improver", dest="enable_per_class_improver",
                    action="store_false")
-    p.add_argument("--c1v2_f1_threshold", type=float, default=0.40)
-    p.add_argument("--c1v2_max_targets", type=int, default=3)
-    p.add_argument("--c1v2_n_pos_examples", type=int, default=8)
+    p.add_argument("--per_class_f1_threshold", type=float, default=0.40)
+    p.add_argument("--per_class_max_targets", type=int, default=3)
+    p.add_argument("--per_class_n_pos_examples", type=int, default=8)
 
-    # Analyzer hyperparams
-    p.add_argument("--query_selection_method", default="submodular")
+    # Analyzer
+    p.add_argument("--query_selection_method", default="batchbald",
+                   choices=["batchbald", "random", "uncertainty"])
     p.add_argument("--query_k_min", type=int, default=20)
     p.add_argument("--query_k_max", type=int, default=60)
     p.add_argument("--class_balance_floor", type=int, default=2)
     p.add_argument("--cache_root", type=Path,
                    default=Path("runs/cache/openai_responses"))
 
-    # Memory level (production = 0; >=2 enables Reflector — optional ablation)
+    # Memory level (production default = 0; >=2 enables Reflector)
     p.add_argument("--memory_level", type=int, default=0, choices=[0, 1, 2, 3],
-                   help="0 = L0 / D_v6 production (Darwinian, no memory). "
-                        ">=2 enables Reflector. Production paper headline uses 0.")
+                   help="0 = Darwinian production (no memory). "
+                        ">=2 enables Reflector. Paper headline uses 0.")
     p.add_argument("--reflector_interval", type=int, default=3,
                    help="When Reflector is enabled, run every N iters.")
     p.add_argument("--reflector_token_budget", type=int, default=2000)
@@ -522,21 +513,21 @@ def main():
             print(f"\n[iter_{k:02d}] viability blacklist: classes {excluded} "
                   f"(failed >={args.class_dropout_after} consecutive iters)")
 
-        # ─── C1_v2: per-class targets from prev iter's F1 ───
-        c1v2_targets_arg = ""
-        if args.c1v2_per_class_improver:
+        # Per-class Improver: target prev-iter's lowest-F1 classes
+        per_class_targets_arg = ""
+        if args.enable_per_class_improver:
             prev_dir = args.out_root / f"iter_{k-1:02d}"
             per_f1 = _per_class_f1_from_iter(prev_dir)
             if per_f1:
                 low_f1 = sorted(per_f1.items(), key=lambda x: x[1])
                 excluded_set = set(excluded) if excluded else set()
                 low_f1 = [(c, f) for c, f in low_f1
-                          if f < args.c1v2_f1_threshold and c not in excluded_set]
-                targets = [c for c, _ in low_f1[: args.c1v2_max_targets]]
+                          if f < args.per_class_f1_threshold and c not in excluded_set]
+                targets = [c for c, _ in low_f1[: args.per_class_max_targets]]
                 if targets:
-                    c1v2_targets_arg = ",".join(str(c) for c in targets)
-                    print(f"[C1_v2] iter_{k:02d} per-class targets: {targets} "
-                          f"(F1<{args.c1v2_f1_threshold}; rest of {args.imp_n_calls} batches stay broad)")
+                    per_class_targets_arg = ",".join(str(c) for c in targets)
+                    print(f"[PER-CLASS] iter_{k:02d} targets: {targets} "
+                          f"(F1<{args.per_class_f1_threshold}; rest of {args.imp_n_calls} batches stay broad)")
 
         # 2. Improver
         imp_dir = it_dir / "improver"
@@ -561,9 +552,9 @@ def main():
             ]
             if exclude_arg:
                 imp_cmd += ["--exclude_classes", exclude_arg]
-            if c1v2_targets_arg:
-                imp_cmd += ["--c1v2_targets", c1v2_targets_arg,
-                            "--c1v2_n_pos_examples", str(args.c1v2_n_pos_examples)]
+            if per_class_targets_arg:
+                imp_cmd += ["--per_class_targets", per_class_targets_arg,
+                            "--per_class_n_pos_examples", str(args.per_class_n_pos_examples)]
             subprocess.run(imp_cmd, check=True)
 
         # Optional: Reflector raw-event tracking (only when memory_level >= 1)
@@ -613,7 +604,7 @@ def main():
             run_eval_subprocess(merged_after_imp, train, val, test, eval_after_imp,
                                   label_key=label_key, task=args.task)
 
-        # 4. Refiner — gated by ref_min_iter (D_v6 production: skip k<3)
+        # 4. Refiner — gated by ref_min_iter
         ref_dir = it_dir / "refiner"
         ref_frag = ref_dir / "pool_fragment.py"
         if k < args.ref_min_iter:
@@ -666,9 +657,9 @@ def main():
         merge_blocks_into_pool(cur_pool, [imp_frag, ref_frag], final_pool,
                                 comment=f"iter_{k:02d} after improver + refiner")
 
-        # ─── C3: pool pruning ───
-        if args.c3_pool_pruning:
-            print(f"\n=== iter_{k:02d}: C3 Pool Pruning ===")
+        # ─── Subsumption pruning: delete annotators dominated by new arrivals ───
+        if args.enable_subsumption_pruning:
+            print(f"\n=== iter_{k:02d}: Subsumption pruning ===")
             try:
                 val_rows = list(read_jsonl(val))
                 new_names = set()
@@ -682,13 +673,13 @@ def main():
                                       and n.name.startswith("lf_")}
                     except SyntaxError:
                         pass
-                n_pruned = _c3_prune(final_pool, val_rows, label_key, new_names,
-                                       subsume_jaccard=args.c3_subsume_jaccard,
-                                       subsume_prec_gain=args.c3_subsume_prec_gain)
+                n_pruned = _subsumption_prune(final_pool, val_rows, label_key, new_names,
+                                       subsume_jaccard=args.subsumption_jaccard,
+                                       subsume_prec_gain=args.subsumption_prec_gain)
                 if n_pruned > 0:
                     shutil.rmtree(it_dir / "eval", ignore_errors=True)
             except Exception as e:
-                print(f"  [C3] WARN: pruning failed: {e}")
+                print(f"  [PRUNE] WARN: pruning failed: {e}")
 
         # 5b. Post-iter ablation
         if args.enable_post_iter_ablation:

@@ -2,7 +2,19 @@
 
 ## Overview
 
-EvoPool grows a pool of programmatic annotators by iteratively prompting an LLM, then aggregates their votes into training labels for a downstream classifier. A 4-agent loop (Generator -> Improver -> Refiner -> selection gate) evolves the pool across iterations, and an embedding-aware aggregator (EvoAgg, A1 LR-CV) converts noisy votes into clean labels that match or beat direct LLM annotation at a fraction of the API cost. Defaults reproduce the paper headline cell: ChemProt + D_v6/L0 (Darwinian) + EvoAgg + RoBERTa-large.
+EvoPool grows a pool of programmatic annotators by iteratively prompting an LLM, then aggregates their votes into training labels for a downstream classifier. A 4-agent loop (Generator -> Improver -> Refiner -> selection gate) evolves the pool across iterations, and an embedding-aware aggregator (EvoAgg, A1 LR-CV) converts noisy votes into clean labels that match or beat direct LLM annotation at a fraction of the API cost. Defaults reproduce the paper headline cell: ChemProt + Darwinian (memory_level=0) + EvoAgg + RoBERTa-large.
+
+## Setup
+
+```bash
+conda create -n evopool python=3.11 -y
+conda activate evopool
+# GPU users: install a CUDA-matched torch wheel from https://pytorch.org first.
+pip install -r requirements.txt
+export OPENAI_API_KEY=sk-...   # required for the Generator / Improver agents
+```
+
+Python 3.10 also works; 3.11 is the tested default for PyTorch + transformers.
 
 ## Quick start
 
@@ -23,16 +35,11 @@ Each launcher accepts an optional config path:
 bash run_evopool.sh configs/fever_roberta.yaml
 ```
 
-## Installation
+## Installation notes
 
-```bash
-pip install -r requirements.txt
-```
-
-Notes:
-- A CUDA-enabled `torch` build is required for downstream training (CFT / LoRA). Pick the wheel for your CUDA version from [pytorch.org](https://pytorch.org).
+- A CUDA-enabled `torch` build is required for downstream training (CFT / LoRA). Pick the wheel for your CUDA version from [pytorch.org](https://pytorch.org) before running `pip install -r requirements.txt`.
 - `sentence-transformers` will download the `all-MiniLM-L6-v2` embedder on first use (~80 MB).
-- Set `OPENAI_API_KEY` in your environment before running the pipeline. Reasoning models (o3, gpt-5) are auto-detected and dispatched through the reasoning API.
+- Reasoning models (o3, gpt-5) are auto-detected from `OPENAI_API_KEY` and dispatched through the reasoning API.
 
 ## Configuration
 
@@ -42,7 +49,7 @@ All runtime behavior is driven by a single YAML file (`config.yaml` by default).
 |-----|---------|
 | `dataset`, `data_dir`, `n_classes`, `multi_label`, `task_family` | Which task to run; resolves prompt + evaluator automatically |
 | `pipeline.{generator,improver,refiner,selection_gate,query_selection}` | 4-agent loop hyperparameters |
-| `pipeline.memory_level` | `0` = L0 Darwinian (paper default); `>=2` enables Reflector / shared memory |
+| `pipeline.memory_level` | `0` = Darwinian (paper default); `>=2` enables Reflector / shared memory |
 | `aggregator` | `evoagg` (paper default) or `mv` (majority-vote baseline) |
 | `evoagg.{embedder,cv_folds}` | A1 LR-CV settings, including R094 out-of-fold correction |
 | `downstream.model` | `roberta-large` (full fine-tune), `qwen3-1.7b`, or `llama-3.1-8b` (LoRA) |
@@ -62,9 +69,9 @@ After raw inputs are in place, `bash process_data.sh` writes processed splits to
 ## Pipeline
 
 1. **Generator** proposes a fresh batch of programmatic annotators each iteration (lexical prompt for classification tasks, verification prompt for FEVER-family).
-2. **Improver** allocates a per-class call budget (C1_v2) to attack the lowest-F1 classes; widens coverage on long-tail labels.
-3. **Refiner** consolidates / deduplicates the high-precision survivors (D_v6 gating: active only from iter >= 3).
-4. **Selection gate** prunes by Jaccard overlap, precision floor, firing floor, and a tiny ablation tolerance (C3 prune-then-diversify).
+2. **Improver** allocates a per-class call budget to attack the lowest-F1 classes; widens coverage on long-tail labels.
+3. **Refiner** consolidates / deduplicates the high-precision survivors (active only from iter >= 3 by default).
+4. **Selection gate** prunes by Jaccard overlap, precision floor, firing floor, and a tiny ablation tolerance (prune-then-diversify via subsumption pruning).
 5. **EvoAgg** (the aggregator) fits a 5-fold out-of-fold logistic regression on `[annotator votes | text embedding]` to produce calibrated soft and hard labels (paper default; pass `aggregator: mv` for the majority-vote baseline).
 6. **Downstream** trains RoBERTa-large (full FT, with an optional clean-fine-tune curve) or a Qwen / Llama LoRA adapter on the aggregated labels.
 
@@ -72,7 +79,7 @@ After raw inputs are in place, `bash process_data.sh` writes processed splits to
 
 Defaults in `config.yaml` already match the headline cell:
 
-- Pipeline = D_v6 / L0 (memory_level = 0, Refiner activates at iter >= 3, C3 pool pruning on)
+- Pipeline = Darwinian (memory_level = 0, Refiner activates at iter >= 3, subsumption pruning on)
 - Generator backbone = `gpt-4o-mini`, temperature = 0.5
 - 12 iterations, seed = 42
 - Aggregator = EvoAgg with 5-fold OOF

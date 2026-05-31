@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
-"""EvoPool: top-level data prep dispatcher driven by config.yaml.
+"""Top-level data prep dispatcher driven by config.yaml.
 
-Reads the EvoPool config (default ``config.yaml``), looks at ``dataset.name``,
-and runs the matching ``data/prepare_<dataset>.py`` routine. For FEVER, also
-runs ``data/enrich_fever.py`` when ``dataset.fever_enriched`` is true.
-
-Usage:
-    python -m data.prepare --config config.yaml
+Usage: python -m data.prepare --config config.yaml
 """
 
 from __future__ import annotations
@@ -17,7 +12,6 @@ from pathlib import Path
 
 
 def _load_config(path: str):
-    """Try src.utils.config_loader first; fall back to a minimal PyYAML read."""
     try:
         from src.utils.config_loader import load_config  # type: ignore
         return load_config(path)
@@ -34,7 +28,7 @@ def _load_config(path: str):
 
 
 def _get(cfg, *keys, default=None):
-    """Safely traverse a nested dict using dot-keys; supports SimpleNamespace too."""
+    # Supports both nested dicts and SimpleNamespace.
     cur = cfg
     for k in keys:
         if cur is None:

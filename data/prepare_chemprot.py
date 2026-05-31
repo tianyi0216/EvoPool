@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""EvoPool: convert WRENCH ChemProt JSON to pipeline JSONL.
+"""Convert WRENCH ChemProt JSON to pipeline JSONL.
 
-Input  : <raw_dir>/{train.json, valid.json, test.json}   (WRENCH ChemProt)
-Output : <out_dir>/{train.jsonl, val.jsonl, test.jsonl}  +  label_map.json + dataset.json
-
-Each output record carries:
-    id, text, true_label (int), true_label_name, label, label_name,
-    metadata.{source, original_split, original_idx, text_normalized,
-              entity1, entity2, span1, span2, num_chars, num_words,
-              wrench_weak_labels (optional)}
+Input : <raw_dir>/{train.json, valid.json, test.json}  (WRENCH format)
+Output: <out_dir>/{train,val,test}.jsonl + label_map.json + dataset.json
 """
 
 from __future__ import annotations
@@ -89,13 +83,6 @@ def convert_split(wrench_path: Path, split: str, out_dir: Path):
 
 
 def prepare_chemprot(raw_dir: str, out_dir: str, val_budget: int = 500) -> None:
-    """Run the full ChemProt prep.
-
-    Args:
-        raw_dir   : directory containing WRENCH train.json / valid.json / test.json
-        out_dir   : where to write {train,val,test}.jsonl + label_map.json + dataset.json
-        val_budget: cap on validation split size (paper convention = 500)
-    """
     raw = Path(raw_dir)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -123,7 +110,6 @@ def prepare_chemprot(raw_dir: str, out_dir: str, val_budget: int = 500) -> None:
     for split, filename in split_files:
         records = convert_split(raw / filename, split, out)
 
-        # Cap val split to budget (paper convention)
         if split == "val" and val_budget and len(records) > val_budget:
             records = records[:val_budget]
             with open(out / "val.jsonl", "w") as f:
