@@ -89,11 +89,14 @@ Run end-to-end with the three launchers above.
 ## Citation
 
 ```bibtex
-@inproceedings{evopool2026,
-  title  = {EvoPool: Evolving a Pool of Programmatic Annotators for Weak Supervision},
-  author = {Anonymous},
-  year   = {2026},
-  note   = {Preprint}
+@misc{xu2026evopoolevolutionaryprogrammaticannotation,
+      title={EvoPool: Evolutionary Programmatic Annotation for Label-Efficient Specialized Supervision}, 
+      author={Tianyi Xu and Yaolun Zhang and Xuan Ouyang and Huazheng Wang},
+      year={2026},
+      eprint={2606.01617},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2606.01617}, 
 }
 ```
 
