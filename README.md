@@ -1,4 +1,38 @@
-# EvoPool
+<div align="center">
+
+  <h3>EvoPool: Evolutionary Programmatic Annotation for Label-Efficient Specialized Supervision</h3>
+
+  <p>
+    <a href="https://tianyi0216.github.io/">Tianyi Xu</a><sup>1,2</sup>&nbsp;&middot;&nbsp;
+    <a href="https://mercury7353.github.io/Yaolun-Zhang.github.io/">Yaolun Zhang</a><sup>1</sup>&nbsp;&middot;&nbsp;
+    <a href="https://yancyou.github.io/">Xuan Ouyang</a><sup>2</sup>&nbsp;&middot;&nbsp;
+    <a href="https://huazhengwang.github.io/">Huazheng Wang</a><sup>1&#9993;</sup>
+  </p>
+
+  <p>
+    <sup>1</sup> Oregon State University &nbsp;&nbsp;
+    <sup>2</sup> University of Wisconsin&ndash;Madison
+  </p>
+
+  <p>
+    <sup>&#9993;</sup> Corresponding author
+  </p>
+
+  <p>
+    <a href="https://arxiv.org/abs/2606.01617">
+      <img src="https://img.shields.io/badge/arXiv-2606.01617-B31B1B?style=flat-square&logo=arxiv" alt="arXiv">
+    </a>
+    <a href="https://github.com/tianyi0216/EvoPool">
+      <img src="https://img.shields.io/badge/Code-GitHub-181717?style=flat-square&logo=github" alt="Code">
+    </a>
+    <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
+    <img src="https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python" alt="Python">
+    <img src="https://img.shields.io/badge/PyTorch-2.4%2B-EE4C2C?style=flat-square&logo=pytorch" alt="PyTorch">
+  </p>
+
+</div>
+
+---
 
 ## Overview
 
