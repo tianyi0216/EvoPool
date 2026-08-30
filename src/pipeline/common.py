@@ -305,25 +305,32 @@ def consistency_filter_train_val(
 # ────────────────────────────────────────────────────────────────────────
 
 def _resolve_python() -> str:
-    """Pick Python executable for subprocesses: current interp if sklearn is
-    importable, else msg conda env, else sys.executable as last resort."""
+    """Pick the Python executable for subprocesses.
+
+    Uses the current interpreter when scikit-learn is importable. Set
+    EVOPOOL_PYTHON to point at another interpreter if you keep scikit-learn in
+    a separate environment.
+    """
     try:
         import sklearn  # noqa: F401
         return sys.executable
     except ImportError:
         pass
-    msg_py = "/home/txu223/miniconda3/envs/msg/bin/python"
-    if Path(msg_py).exists():
+
+    override = os.environ.get("EVOPOOL_PYTHON")
+    if override and Path(override).exists():
         import subprocess as _sp
         try:
-            r = _sp.run([msg_py, "-c", "import sklearn"], capture_output=True, timeout=10)
+            r = _sp.run([override, "-c", "import sklearn"], capture_output=True, timeout=10)
             if r.returncode == 0:
-                print(f"  [_resolve_python] using {msg_py} (msg conda env)")
-                return msg_py
+                print(f"  [_resolve_python] using EVOPOOL_PYTHON={override}")
+                return override
         except Exception:
             pass
-    print(f"  [_resolve_python] WARN: neither {sys.executable} nor msg env has sklearn; "
-          f"subprocesses will likely fail.")
+
+    print(f"  [_resolve_python] WARN: scikit-learn is not importable from "
+          f"{sys.executable}. Install it with 'pip install scikit-learn', or set "
+          f"EVOPOOL_PYTHON to an interpreter that has it.")
     return sys.executable
 
 

@@ -2,6 +2,8 @@
 
   <h3>EvoPool: Evolutionary Programmatic Annotation for Label-Efficient Specialized Supervision</h3>
 
+  <p><b>EMNLP 2026 Findings</b></p>
+
   <p>
     <a href="https://tianyi0216.github.io/">Tianyi Xu</a><sup>1,2</sup>&nbsp;&middot;&nbsp;
     <a href="https://mercury7353.github.io/Yaolun-Zhang.github.io/">Yaolun Zhang</a><sup>1</sup>&nbsp;&middot;&nbsp;
@@ -19,6 +21,7 @@
   </p>
 
   <p>
+    <img src="https://img.shields.io/badge/EMNLP%202026-Findings-4B0082?style=flat-square" alt="EMNLP 2026 Findings">
     <a href="https://arxiv.org/abs/2606.01617">
       <img src="https://img.shields.io/badge/arXiv-2606.01617-B31B1B?style=flat-square&logo=arxiv" alt="arXiv">
     </a>
@@ -35,6 +38,10 @@
 ---
 
 ## Overview
+
+<p align="center">
+  <img src="assets/pipeline.png" alt="EvoPool pipeline" width="100%">
+</p>
 
 EvoPool grows a pool of programmatic annotators by iteratively prompting an LLM, then aggregates their votes into training labels for a downstream model. A 4-agent loop (Generator -> Improver -> Refiner -> selection gate) evolves the pool across iterations, and an embedding-aware aggregator converts noisy votes into clean labels that match or beat direct LLM annotation at a fraction of the cost.
 
